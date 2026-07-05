@@ -1,20 +1,29 @@
 """DynamoDB-backed persistence for upgrade test run state.
 
 Single table "upgrade-test-runs", partition key run_id, sort key
-record_type. record_type="_metadata" holds run-level state; any other
-record_type value is a pipeline_id and holds that pipeline's state. This
-lets get_all_pipelines query everything for a run_id in one call while
-still separating run-level from pipeline-level fields.
+record_type. record_type="_metadata" holds run-level state; a pipeline_id
+holds that pipeline's current state; "event#<iso-timestamp>#<uuid>" holds
+one immutable audit-log entry. Current-state records are overwritten in
+place (update_pipeline_status / update_run_status) and only ever reflect
+the latest values - they can't tell you a job failed and was retried,
+only that it currently succeeded. Events are append-only and never
+updated, so record_event is what preserves the full timeline (when each
+phase started/ended, transient failures, retries) for auditing.
+
+get_all_pipelines queries everything for a run_id in one call and filters
+out both _metadata and event# records, leaving just pipeline state.
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
 TABLE_NAME = "upgrade-test-runs"
 METADATA_RECORD_TYPE = "_metadata"
+EVENT_RECORD_PREFIX = "event#"
 
 
 def _now_iso() -> str:
@@ -117,12 +126,44 @@ class StateStore:
         return self._get_record(run_id, METADATA_RECORD_TYPE)
 
     def get_all_pipelines(self, run_id: str) -> list[dict]:
+        items = self._query_run(run_id)
+        return [
+            item
+            for item in items
+            if item["record_type"] != METADATA_RECORD_TYPE
+            and not item["record_type"].startswith(EVENT_RECORD_PREFIX)
+        ]
+
+    def record_event(self, run_id: str, phase: str, event: str, **details) -> None:
+        """Append an immutable audit-log entry. Never updated, never overwritten -
+        this is the source of truth for "what happened when", including
+        transient failures and retries that current-state records lose."""
+        now = _now_iso()
+        record_type = f"{EVENT_RECORD_PREFIX}{now}#{uuid.uuid4().hex[:8]}"
+
+        item = {
+            "run_id": run_id,
+            "record_type": record_type,
+            "timestamp": now,
+            "phase": phase,
+            "event": event,
+            **details,
+        }
+        self._table.put_item(Item=_to_dynamo_safe(item))
+
+    def get_events(self, run_id: str) -> list[dict]:
+        """Returns this run's audit log in chronological order (ISO timestamps
+        in the sort key mean DynamoDB's default ascending query order is
+        already chronological)."""
+        items = self._query_run(run_id)
+        return [item for item in items if item["record_type"].startswith(EVENT_RECORD_PREFIX)]
+
+    def _query_run(self, run_id: str) -> list[dict]:
         response = self._table.query(
             KeyConditionExpression="run_id = :run_id",
             ExpressionAttributeValues={":run_id": run_id},
         )
-        items = [_from_dynamo_safe(item) for item in response.get("Items", [])]
-        return [item for item in items if item["record_type"] != METADATA_RECORD_TYPE]
+        return [_from_dynamo_safe(item) for item in response.get("Items", [])]
 
     def _get_record(self, run_id: str, record_type: str) -> dict:
         response = self._table.get_item(Key={"run_id": run_id, "record_type": record_type})

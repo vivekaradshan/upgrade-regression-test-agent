@@ -79,3 +79,52 @@ def test_concurrent_updates_do_not_lose_data(state_store, manifest):
     pipeline = state_store.get_pipeline_status("run-4", manifest.pipeline.id)
     for i in range(10):
         assert pipeline[f"field_{i}"] == i
+
+
+def test_record_event_appends_without_overwriting_current_state(state_store, manifest):
+    state_store.init_run("run-5", manifest)
+
+    state_store.record_event(
+        "run-5", phase="EXECUTE", event="target_failed", error="ArithmeticException"
+    )
+    state_store.update_pipeline_status("run-5", manifest.pipeline.id, target_status="FAILED")
+
+    state_store.record_event("run-5", phase="ANALYZE", event="pattern_matched")
+    state_store.update_pipeline_status(
+        "run-5", manifest.pipeline.id, target_status="SUCCEEDED", retry_count=1
+    )
+
+    # current-state record only reflects the latest values
+    pipeline = state_store.get_pipeline_status("run-5", manifest.pipeline.id)
+    assert pipeline["target_status"] == "SUCCEEDED"
+    assert pipeline["retry_count"] == 1
+
+    # but the event log still has the earlier failure on record
+    events = state_store.get_events("run-5")
+    assert len(events) == 2
+    assert events[0]["event"] == "target_failed"
+    assert events[0]["error"] == "ArithmeticException"
+    assert events[1]["event"] == "pattern_matched"
+
+
+def test_get_events_returns_chronological_order(state_store, manifest):
+    state_store.init_run("run-6", manifest)
+
+    for i in range(5):
+        state_store.record_event("run-6", phase="EXECUTE", event=f"step_{i}")
+
+    events = state_store.get_events("run-6")
+
+    assert [e["event"] for e in events] == [f"step_{i}" for i in range(5)]
+    timestamps = [e["timestamp"] for e in events]
+    assert timestamps == sorted(timestamps)
+
+
+def test_get_all_pipelines_excludes_event_records(state_store, manifest):
+    state_store.init_run("run-7", manifest)
+    state_store.record_event("run-7", phase="EXECUTE", event="baseline_started")
+
+    pipelines = state_store.get_all_pipelines("run-7")
+
+    assert len(pipelines) == 1
+    assert pipelines[0]["pipeline_id"] == manifest.pipeline.id
