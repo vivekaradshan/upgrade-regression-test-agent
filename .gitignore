@@ -1,0 +1,10 @@
+.venv/
+.spark4_libs/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+output/
+*.egg-info/
+.env
+*.log

@@ -1,0 +1,125 @@
+test:
+  name: spark-3.5-to-4.0-upgrade
+  description: >
+    Validate that the customer-transactions PySpark pipeline produces
+    equivalent output when upgraded from Spark 3.5.4 to Spark 4.0.0, and
+    that known Spark 4.0 breaking changes (ANSI mode, datetime parsing,
+    strict casts, servlet package migration) are detected and, where
+    possible, automatically corrected.
+  owner: data-platform-team
+
+source_control:
+  provider: github
+  owner: vivekaradshan
+  repo: upgrade-regression-test-agent
+  baseline:
+    branch: main
+  target:
+    branch_prefix: auto/upgrade-test
+    modifications:
+      - file: pipeline/config.yaml
+        changes:
+          - key: spark_version
+            from_value: "3.5.4"
+            to_value: "4.0.0"
+  pr:
+    reviewers:
+      - vivekaradshan
+    auto_create: true
+    auto_merge: false
+
+pipeline:
+  id: customer-transactions
+  entry_script: pipeline/spark_job.py
+  spark_config:
+    spark.master: "local[*]"
+    spark.sql.shuffle.partitions: "4"
+
+execution:
+  output_base: output
+  baseline_spark_version: "3.5.4"
+  target_spark_version: "4.0.0"
+  timeouts:
+    single_pipeline_seconds: 300
+
+log_analysis:
+  known_failure_patterns:
+    - pattern: "ArithmeticException.*divide by zero"
+      diagnosis: >
+        ANSI SQL mode is enabled by default in Spark 4.0 - division by zero
+        now throws instead of returning NULL
+      action: config_fix
+      auto_fix: true
+      fix_config:
+        key: spark.sql.ansi.enabled
+        value: "false"
+
+    - pattern: "SparkUpgradeException.*DATETIME_PATTERN_RECOGNITION"
+      diagnosis: Spark 4.0 changed datetime pattern recognition behavior
+      action: config_fix
+      auto_fix: true
+      fix_config:
+        key: spark.sql.legacy.timeParserPolicy
+        value: "LEGACY"
+
+    - pattern: "AnalysisException.*cannot resolve.*CAST"
+      diagnosis: Spark 4.0 ANSI mode rejects implicit unsafe casts
+      action: config_fix
+      auto_fix: true
+      fix_config:
+        key: spark.sql.ansi.enabled
+        value: "false"
+
+    - pattern: "ClassNotFoundException.*javax.servlet"
+      diagnosis: Spark 4.0 migrated from javax.servlet to jakarta.servlet
+      action: escalate
+      auto_fix: false
+
+  retry:
+    max_retries: 2
+    backoff_seconds: 5
+
+validation:
+  checks:
+    - name: row_count_match
+      type: exact
+      severity: critical
+
+    - name: schema_match
+      type: exact
+      severity: critical
+
+    - name: column_level_diff
+      type: tolerance
+      severity: warning
+      config:
+        tolerance: 0.0001
+
+reporting:
+  output_dir: reports
+  formats:
+    - html
+    - json
+
+upgrade_strategy:
+  type: spark_version_bump
+  version_mapping:
+    baseline:
+      spark: "3.5.4"
+      java: "17"
+      python: "3.11"
+    target:
+      spark: "4.0.0"
+      java: "17"
+      python: "3.11"
+  migration_notes:
+    - >
+      ANSI SQL mode is ON by default in 4.0 - division by zero, overflow,
+      and invalid casts now throw exceptions instead of returning NULL
+    - >
+      spark.sql.parquet.compression.codec no longer accepts 'lz4raw' -
+      use 'lz4_raw'
+    - Default shuffle service backend changed from LevelDB to RocksDB
+    - >
+      CREATE TABLE without USING clause now defaults to
+      spark.sql.sources.default instead of Hive
