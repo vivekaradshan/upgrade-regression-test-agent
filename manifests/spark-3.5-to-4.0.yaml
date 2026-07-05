@@ -44,7 +44,7 @@ execution:
 
 log_analysis:
   known_failure_patterns:
-    - pattern: "ArithmeticException.*divide by zero"
+    - pattern: "ArithmeticException.*(divide by zero|division by zero|DIVIDE_BY_ZERO)"
       diagnosis: >
         ANSI SQL mode is enabled by default in Spark 4.0 - division by zero
         now throws instead of returning NULL

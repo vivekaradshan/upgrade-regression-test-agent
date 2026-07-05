@@ -10,3 +10,4 @@ output/
 *.egg-info/
 .env
 *.log
+!tests/fixtures/*.log
