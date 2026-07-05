@@ -11,7 +11,7 @@ test:
 source_control:
   provider: github
   owner: vivekaradshan
-  repo: upgrade-regression-test-agent
+  repo: customer-transactions-pipeline
   baseline:
     branch: main
   target:
