@@ -52,7 +52,14 @@ def test_create_branch_write_file_read_back_delete(client):
     )
     assert update_result["commit"]["sha"]
 
-    read_back_content, _ = gh.get_file_content("README.md", branch_name)
+    # GitHub's Contents API is occasionally eventually-consistent: a read
+    # immediately after a write can briefly return the pre-write content.
+    # Retry a few times before failing.
+    for _ in range(5):
+        read_back_content, _ = gh.get_file_content("README.md", branch_name)
+        if "github_client integration test" in read_back_content:
+            break
+        time.sleep(1)
     assert "github_client integration test" in read_back_content
 
 
