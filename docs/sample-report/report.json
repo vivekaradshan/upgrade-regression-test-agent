@@ -1,0 +1,44 @@
+{
+  "run_id": "run-feb190a6cbc5",
+  "overall_status": "PASSED",
+  "executive_summary": "The upgrade test PASSED after 1 automatic retry. A known Spark 4.0 breaking change was detected and corrected automatically; baseline and target outputs match.",
+  "pipeline_id": "customer-transactions",
+  "baseline_spark_version": "3.5.4",
+  "target_spark_version": "4.0.0",
+  "baseline_branch": "auto/upgrade-test/run-feb190a6cbc5-baseline",
+  "target_branch": "auto/upgrade-test/run-feb190a6cbc5-target",
+  "baseline_status": "SUCCEEDED",
+  "target_status": "SUCCEEDED",
+  "retry_count": 1,
+  "validation_checks": [
+    {
+      "name": "row_count_match",
+      "status": "PASSED",
+      "details": "1000 rows in both",
+      "severity": "critical"
+    },
+    {
+      "name": "schema_match",
+      "status": "PASSED",
+      "details": "schemas identical",
+      "severity": "critical"
+    },
+    {
+      "name": "column_level_diff",
+      "status": "PASSED",
+      "details": "all numeric columns within tolerance",
+      "severity": "warning"
+    }
+  ],
+  "analysis_result": {
+    "source": "pattern_matcher",
+    "diagnosis": "ANSI SQL mode is enabled by default in Spark 4.0 - division by zero now throws instead of returning NULL\n",
+    "action": "config_fix",
+    "auto_fix": true,
+    "fix_config": {
+      "key": "spark.sql.ansi.enabled",
+      "value": "false"
+    }
+  },
+  "recommendations": []
+}

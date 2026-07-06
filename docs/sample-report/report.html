@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Upgrade Test Report - run-feb190a6cbc5</title>
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1, h2 { border-bottom: 2px solid #eee; padding-bottom: 0.3rem; }
+  .status-badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 4px; font-weight: bold; color: white; }
+  .status-PASSED, .status-SUCCEEDED { background: #2e7d32; }
+  .status-WARNING { background: #f9a825; }
+  .status-FAILED { background: #c62828; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+  th { background: #f5f5f5; }
+  .summary { font-size: 1.1rem; }
+  code { background: #f5f5f5; padding: 0.1rem 0.3rem; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h1>Spark Upgrade Regression Test Report</h1>
+<p class="summary">
+  Run <code>run-feb190a6cbc5</code> -
+  <span class="status-badge status-PASSED">PASSED</span>
+</p>
+
+<h2>Executive Summary</h2>
+<p>The upgrade test PASSED after 1 automatic retry. A known Spark 4.0 breaking change was detected and corrected automatically; baseline and target outputs match.</p>
+
+<h2>Upgrade Details</h2>
+<table>
+  <tr><th>Baseline Spark version</th><td>3.5.4</td></tr>
+  <tr><th>Target Spark version</th><td>4.0.0</td></tr>
+  <tr><th>Pipeline</th><td>customer-transactions</td></tr>
+  <tr><th>Baseline branch</th><td>auto/upgrade-test/run-feb190a6cbc5-baseline</td></tr>
+  <tr><th>Target branch</th><td>auto/upgrade-test/run-feb190a6cbc5-target</td></tr>
+</table>
+
+<h2>Pipeline Results</h2>
+<table>
+  <tr>
+    <th>Pipeline</th><th>Baseline</th><th>Target</th><th>Retries</th><th>Status</th>
+  </tr>
+  <tr>
+    <td>customer-transactions</td>
+    <td><span class="status-badge status-SUCCEEDED">SUCCEEDED</span></td>
+    <td><span class="status-badge status-SUCCEEDED">SUCCEEDED</span></td>
+    <td>1</td>
+    <td><span class="status-badge status-PASSED">PASSED</span></td>
+  </tr>
+</table>
+
+
+<h2>Validation Results</h2>
+<table>
+  <tr><th>Check</th><th>Status</th><th>Severity</th><th>Details</th></tr>
+  
+  <tr>
+    <td>row_count_match</td>
+    <td><span class="status-badge status-PASSED">PASSED</span></td>
+    <td>critical</td>
+    <td>1000 rows in both</td>
+  </tr>
+  
+  <tr>
+    <td>schema_match</td>
+    <td><span class="status-badge status-PASSED">PASSED</span></td>
+    <td>critical</td>
+    <td>schemas identical</td>
+  </tr>
+  
+  <tr>
+    <td>column_level_diff</td>
+    <td><span class="status-badge status-PASSED">PASSED</span></td>
+    <td>warning</td>
+    <td>all numeric columns within tolerance</td>
+  </tr>
+  
+</table>
+
+
+
+<h2>Failure Analysis</h2>
+<p><strong>Diagnosis:</strong> ANSI SQL mode is enabled by default in Spark 4.0 - division by zero now throws instead of returning NULL
+</p>
+<p><strong>Source:</strong> pattern_matcher</p>
+
+<h2>Corrective Action Taken</h2>
+<p>Set <code>spark.sql.ansi.enabled = false</code> on the target branch, then retried.</p>
+
+
+
+
+
+</body>
+</html>
