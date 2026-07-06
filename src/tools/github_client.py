@@ -23,6 +23,7 @@ class GitHubClient:
     def __init__(self, token: str, owner: str, repo: str):
         self.owner = owner
         self.repo = repo
+        self.token = token
         self._client = httpx.Client(
             base_url=GITHUB_API_BASE,
             headers={
