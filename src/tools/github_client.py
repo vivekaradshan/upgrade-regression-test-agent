@@ -80,6 +80,11 @@ class GitHubClient:
         response = self._request("POST", path, json=payload)
         return response.json()
 
+    def close_pull_request(self, pull_number: int) -> dict:
+        path = f"/repos/{self.owner}/{self.repo}/pulls/{pull_number}"
+        response = self._request("PATCH", path, json={"state": "closed"})
+        return response.json()
+
     def delete_branch(self, branch_name: str) -> None:
         path = f"/repos/{self.owner}/{self.repo}/git/refs/heads/{branch_name}"
         self._request("DELETE", path)

@@ -2,9 +2,11 @@
 
 create_branches -> mock_build -> execute_jobs -> analyze_logs, then a
 conditional edge: phase == RETRY loops back to execute_jobs (up to the
-manifest's max_retries), phase == VALIDATE (target succeeded) proceeds to
-validate_data, anything else (escalated failure) ends the graph for now.
-Later steps append generate_report -> raise_pr after validate_data.
+manifest's max_retries); phase == VALIDATE (target succeeded) proceeds to
+validate_data; phase == REPORT (escalated failure, nothing to validate)
+skips straight to generate_report. Both validate_data and the escalation
+path converge on generate_report -> raise_pr -> END, so every run gets a
+report and a PR regardless of pass/fail.
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ from src.orchestrator.nodes.analyze_node import make_analyze_logs_node
 from src.orchestrator.nodes.branch_node import make_create_branches_node
 from src.orchestrator.nodes.build_node import make_mock_build_node
 from src.orchestrator.nodes.execute_node import make_execute_jobs_node
+from src.orchestrator.nodes.pr_node import make_raise_pr_node
+from src.orchestrator.nodes.report_node import make_generate_report_node
 from src.orchestrator.nodes.validate_node import make_validate_data_node
 from src.orchestrator.state import UpgradeTestState
 from src.tools.github_client import GitHubClient
@@ -39,7 +43,7 @@ def _route_after_analysis(state: UpgradeTestState) -> str:
         return "execute_jobs"
     if state["phase"] == "VALIDATE":
         return "validate_data"
-    return END
+    return "generate_report"
 
 
 def build_graph(
@@ -48,6 +52,7 @@ def build_graph(
     step_functions: MockStepFunctions,
     llm_analyzer: LLMAnalyzer,
     workspace_dir: str,
+    reports_dir: str,
 ):
     graph = StateGraph(UpgradeTestState)
 
@@ -61,6 +66,8 @@ def build_graph(
         "analyze_logs", make_analyze_logs_node(github_client, state_store, llm_analyzer)
     )
     graph.add_node("validate_data", make_validate_data_node(state_store))
+    graph.add_node("generate_report", make_generate_report_node(state_store, reports_dir))
+    graph.add_node("raise_pr", make_raise_pr_node(github_client, state_store))
 
     graph.add_edge(START, "create_branches")
     graph.add_edge("create_branches", "mock_build")
@@ -69,9 +76,15 @@ def build_graph(
     graph.add_conditional_edges(
         "analyze_logs",
         _route_after_analysis,
-        {"execute_jobs": "execute_jobs", "validate_data": "validate_data", END: END},
+        {
+            "execute_jobs": "execute_jobs",
+            "validate_data": "validate_data",
+            "generate_report": "generate_report",
+        },
     )
-    graph.add_edge("validate_data", END)
+    graph.add_edge("validate_data", "generate_report")
+    graph.add_edge("generate_report", "raise_pr")
+    graph.add_edge("raise_pr", END)
 
     return graph.compile()
 
@@ -106,7 +119,10 @@ def run_upgrade_test(manifest_path: str, workspace_dir: str | None = None) -> di
     run_id = f"run-{uuid.uuid4().hex[:12]}"
     state_store.init_run(run_id, manifest)
 
-    graph = build_graph(github_client, state_store, step_functions, llm_analyzer, workspace_dir)
+    reports_dir = str(PROJECT_ROOT / manifest.reporting.output_dir)
+    graph = build_graph(
+        github_client, state_store, step_functions, llm_analyzer, workspace_dir, reports_dir
+    )
 
     initial_state: UpgradeTestState = {
         "run_id": run_id,

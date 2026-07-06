@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Upgrade Test Report - {{ run_id }}</title>
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1, h2 { border-bottom: 2px solid #eee; padding-bottom: 0.3rem; }
+  .status-badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 4px; font-weight: bold; color: white; }
+  .status-PASSED, .status-SUCCEEDED { background: #2e7d32; }
+  .status-WARNING { background: #f9a825; }
+  .status-FAILED { background: #c62828; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+  th { background: #f5f5f5; }
+  .summary { font-size: 1.1rem; }
+  code { background: #f5f5f5; padding: 0.1rem 0.3rem; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h1>Spark Upgrade Regression Test Report</h1>
+<p class="summary">
+  Run <code>{{ run_id }}</code> -
+  <span class="status-badge status-{{ overall_status }}">{{ overall_status }}</span>
+</p>
+
+<h2>Executive Summary</h2>
+<p>{{ executive_summary }}</p>
+
+<h2>Upgrade Details</h2>
+<table>
+  <tr><th>Baseline Spark version</th><td>{{ baseline_spark_version }}</td></tr>
+  <tr><th>Target Spark version</th><td>{{ target_spark_version }}</td></tr>
+  <tr><th>Pipeline</th><td>{{ pipeline_id }}</td></tr>
+  <tr><th>Baseline branch</th><td>{{ baseline_branch }}</td></tr>
+  <tr><th>Target branch</th><td>{{ target_branch }}</td></tr>
+</table>
+
+<h2>Pipeline Results</h2>
+<table>
+  <tr>
+    <th>Pipeline</th><th>Baseline</th><th>Target</th><th>Retries</th><th>Status</th>
+  </tr>
+  <tr>
+    <td>{{ pipeline_id }}</td>
+    <td><span class="status-badge status-{{ baseline_status }}">{{ baseline_status }}</span></td>
+    <td><span class="status-badge status-{{ target_status }}">{{ target_status }}</span></td>
+    <td>{{ retry_count }}</td>
+    <td><span class="status-badge status-{{ overall_status }}">{{ overall_status }}</span></td>
+  </tr>
+</table>
+
+{% if validation_checks %}
+<h2>Validation Results</h2>
+<table>
+  <tr><th>Check</th><th>Status</th><th>Severity</th><th>Details</th></tr>
+  {% for check in validation_checks %}
+  <tr>
+    <td>{{ check.name }}</td>
+    <td><span class="status-badge status-{{ check.status }}">{{ check.status }}</span></td>
+    <td>{{ check.severity }}</td>
+    <td>{{ check.details }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if analysis_result %}
+<h2>Failure Analysis</h2>
+<p><strong>Diagnosis:</strong> {{ analysis_result.diagnosis }}</p>
+<p><strong>Source:</strong> {{ analysis_result.source }}</p>
+{% if analysis_result.fix_config %}
+<h2>Corrective Action Taken</h2>
+<p>Set <code>{{ analysis_result.fix_config.key }} = {{ analysis_result.fix_config.value }}</code> on the target branch, then retried.</p>
+{% endif %}
+{% endif %}
+
+{% if recommendations %}
+<h2>Recommendations</h2>
+<ul>
+  {% for recommendation in recommendations %}
+  <li>{{ recommendation }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+</body>
+</html>
