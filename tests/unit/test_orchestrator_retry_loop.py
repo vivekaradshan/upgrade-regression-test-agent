@@ -52,7 +52,11 @@ def test_full_flow_detects_ansi_failure_and_retries_to_success(tmp_path, cleanup
 
     assert final_state["baseline_execution"]["status"] == "SUCCEEDED"
     assert final_state["target_execution"]["status"] == "SUCCEEDED"
-    assert final_state["phase"] == "VALIDATE"
+
+    assert final_state["phase"] == "REPORT"
+    assert final_state["validation_results"]["overall_status"] == "PASSED"
+    check_names = {c["name"] for c in final_state["validation_results"]["checks"]}
+    assert check_names == {"row_count_match", "schema_match", "column_level_diff"}
 
 
 def test_analyze_logs_escalates_when_not_auto_fixable(tmp_path):

@@ -50,8 +50,12 @@ def make_execute_jobs_node(
         log_dir = os.path.join(workspace_dir, run_id, "logs")
         timeout_seconds = manifest.execution.timeouts.single_pipeline_seconds
 
-        baseline_output = os.path.join(manifest.execution.output_base, run_id, "baseline")
-        target_output = os.path.join(manifest.execution.output_base, run_id, "target")
+        # Absolute, not relative to manifest.execution.output_base alone: the
+        # Spark subprocess runs with cwd=baseline_dir/target_dir, so a bare
+        # relative path here would be ambiguous later (relative to which
+        # checkout?) once this node has returned.
+        baseline_output = os.path.join(baseline_dir, manifest.execution.output_base, run_id, "baseline")
+        target_output = os.path.join(target_dir, manifest.execution.output_base, run_id, "target")
 
         baseline_arn = step_functions.start_execution(
             state_machine_arn="arn:aws:states:local:mock:stateMachine:baseline",

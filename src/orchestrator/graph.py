@@ -2,8 +2,9 @@
 
 create_branches -> mock_build -> execute_jobs -> analyze_logs, then a
 conditional edge: phase == RETRY loops back to execute_jobs (up to the
-manifest's max_retries), anything else ends the graph for now. Later
-steps append validate_data -> generate_report -> raise_pr before END.
+manifest's max_retries), phase == VALIDATE (target succeeded) proceeds to
+validate_data, anything else (escalated failure) ends the graph for now.
+Later steps append generate_report -> raise_pr after validate_data.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from src.orchestrator.nodes.analyze_node import make_analyze_logs_node
 from src.orchestrator.nodes.branch_node import make_create_branches_node
 from src.orchestrator.nodes.build_node import make_mock_build_node
 from src.orchestrator.nodes.execute_node import make_execute_jobs_node
+from src.orchestrator.nodes.validate_node import make_validate_data_node
 from src.orchestrator.state import UpgradeTestState
 from src.tools.github_client import GitHubClient
 from src.tools.state_store import StateStore
@@ -33,7 +35,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _route_after_analysis(state: UpgradeTestState) -> str:
-    return "execute_jobs" if state["phase"] == "RETRY" else END
+    if state["phase"] == "RETRY":
+        return "execute_jobs"
+    if state["phase"] == "VALIDATE":
+        return "validate_data"
+    return END
 
 
 def build_graph(
@@ -54,14 +60,18 @@ def build_graph(
     graph.add_node(
         "analyze_logs", make_analyze_logs_node(github_client, state_store, llm_analyzer)
     )
+    graph.add_node("validate_data", make_validate_data_node(state_store))
 
     graph.add_edge(START, "create_branches")
     graph.add_edge("create_branches", "mock_build")
     graph.add_edge("mock_build", "execute_jobs")
     graph.add_edge("execute_jobs", "analyze_logs")
     graph.add_conditional_edges(
-        "analyze_logs", _route_after_analysis, {"execute_jobs": "execute_jobs", END: END}
+        "analyze_logs",
+        _route_after_analysis,
+        {"execute_jobs": "execute_jobs", "validate_data": "validate_data", END: END},
     )
+    graph.add_edge("validate_data", END)
 
     return graph.compile()
 
