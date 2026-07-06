@@ -16,6 +16,8 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 from src.config.manifest import TestManifest
 from src.mock_infra.mock_step_functions import MockStepFunctions
 from src.orchestrator.state import UpgradeTestState
@@ -57,7 +59,7 @@ def make_execute_jobs_node(
                 "entry_script": os.path.join(baseline_dir, manifest.pipeline.entry_script),
                 "input_path": data_path,
                 "output_path": baseline_output,
-                "spark_config": manifest.pipeline.spark_config,
+                "spark_config": _effective_spark_config(baseline_dir, manifest.pipeline.spark_config),
                 "spark_version": manifest.execution.baseline_spark_version,
                 "log_dir": log_dir,
                 "cwd": baseline_dir,
@@ -71,7 +73,7 @@ def make_execute_jobs_node(
                 "entry_script": os.path.join(target_dir, manifest.pipeline.entry_script),
                 "input_path": data_path,
                 "output_path": target_output,
-                "spark_config": manifest.pipeline.spark_config,
+                "spark_config": _effective_spark_config(target_dir, manifest.pipeline.spark_config),
                 "spark_version": manifest.execution.target_spark_version,
                 "log_dir": log_dir,
                 "cwd": target_dir,
@@ -141,6 +143,22 @@ def _sync_local_checkout(clone_url: str, branch: str, target_dir: str) -> None:
             check=True,
             capture_output=True,
         )
+
+
+def _effective_spark_config(pipeline_dir: str, manifest_spark_config: dict[str, str]) -> dict[str, str]:
+    """A corrective fix commits a new spark_config value to the branch's
+    config.yaml (see analyze_node.py) - it never touches the manifest, which
+    is fixed for the whole run. So the checked-out branch's own config.yaml
+    is the actual current source of truth and must override the manifest's
+    static config, or a committed fix would silently never take effect."""
+    config_path = Path(pipeline_dir) / "pipeline" / "config.yaml"
+    if not config_path.exists():
+        return dict(manifest_spark_config)
+
+    branch_config = yaml.safe_load(config_path.read_text()) or {}
+    branch_spark_config = branch_config.get("spark_config", {})
+
+    return {**manifest_spark_config, **branch_spark_config}
 
 
 def _generate_mock_data(pipeline_dir: str, output_csv_path: str) -> None:
