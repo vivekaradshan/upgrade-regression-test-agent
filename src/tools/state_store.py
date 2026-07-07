@@ -16,9 +16,11 @@ out both _metadata and event# records, leaving just pipeline state.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 TABLE_NAME = "upgrade-test-runs"
@@ -133,6 +135,23 @@ class StateStore:
             if item["record_type"] != METADATA_RECORD_TYPE
             and not item["record_type"].startswith(EVENT_RECORD_PREFIX)
         ]
+
+    def export_snapshot(self, run_id: str, path: str) -> None:
+        """Dumps this run's current metadata + pipeline records to a JSON
+        file. Needed because the dashboard runs in a separate process from
+        the orchestrator, and moto's mocked DynamoDB only lives in-memory
+        within the process that started it - the dashboard has no way to
+        read the orchestrator's live DynamoDB state directly, so this file
+        is the actual channel between the two."""
+        snapshot = {
+            "run_id": run_id,
+            "metadata": self.get_run_metadata(run_id),
+            "pipelines": self.get_all_pipelines(run_id),
+        }
+
+        snapshot_path = Path(path)
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_text(json.dumps(snapshot, indent=2, default=str))
 
     def record_event(self, run_id: str, phase: str, event: str, **details) -> None:
         """Append an immutable audit-log entry. Never updated, never overwritten -

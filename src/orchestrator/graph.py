@@ -89,10 +89,16 @@ def build_graph(
     return graph.compile()
 
 
-def run_upgrade_test(manifest_path: str, workspace_dir: str | None = None) -> dict:
+def run_upgrade_test(
+    manifest_path: str, workspace_dir: str | None = None, state_dir: str | None = None
+) -> dict:
     manifest = ManifestLoader.load_from_file(manifest_path)
     settings = Settings()
     workspace_dir = workspace_dir or str(PROJECT_ROOT / "workspace" / "runs")
+    # Deliberately independent of workspace_dir: the dashboard (a separate
+    # process) needs a stable, known location to scan for run snapshots
+    # regardless of what workspace_dir a given run used for its checkouts.
+    state_dir = state_dir or str(PROJECT_ROOT / "workspace" / "state")
 
     github_client = GitHubClient(
         token=settings.github_token,
@@ -142,8 +148,15 @@ def run_upgrade_test(manifest_path: str, workspace_dir: str | None = None) -> di
         "error": "",
     }
 
+    snapshot_path = str(Path(state_dir) / f"{run_id}.json")
+    state_store.export_snapshot(run_id, snapshot_path)
+
     try:
-        return graph.invoke(initial_state)
+        final_state = initial_state
+        for step_state in graph.stream(initial_state, stream_mode="values"):
+            final_state = step_state
+            state_store.export_snapshot(run_id, snapshot_path)
+        return final_state
     finally:
         github_client.close()
         aws_factory.stop()
