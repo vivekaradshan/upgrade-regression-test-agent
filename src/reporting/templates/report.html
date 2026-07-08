@@ -4,17 +4,23 @@
 <meta charset="utf-8">
 <title>Upgrade Test Report - {{ run_id }}</title>
 <style>
-  body { font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
-  h1, h2 { border-bottom: 2px solid #eee; padding-bottom: 0.3rem; }
+  :root {
+    --fg: #1a1a1a;
+    --border: #e0e0e0;
+    --table-header-bg: #f5f5f5;
+    --code-bg: #f0f0f0;
+  }
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: var(--fg); }
+  h1, h2 { border-bottom: 2px solid var(--border); padding-bottom: 0.3rem; }
   .status-badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 4px; font-weight: bold; color: white; }
   .status-PASSED, .status-SUCCEEDED { background: #2e7d32; }
-  .status-WARNING { background: #f9a825; }
+  .status-WARNING { background: #b8860b; }
   .status-FAILED { background: #c62828; }
   table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-  th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
-  th { background: #f5f5f5; }
+  th, td { border: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; }
+  th { background: var(--table-header-bg); }
   .summary { font-size: 1.1rem; }
-  code { background: #f5f5f5; padding: 0.1rem 0.3rem; border-radius: 3px; }
+  code { background: var(--code-bg); padding: 0.1rem 0.3rem; border-radius: 3px; }
 </style>
 </head>
 <body>

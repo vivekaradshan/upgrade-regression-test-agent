@@ -14,27 +14,25 @@
     {
       "name": "row_count_match",
       "status": "PASSED",
-      "details": "1000 rows in both",
-      "severity": "critical"
+      "severity": "critical",
+      "details": "1000 rows in both"
     },
     {
       "name": "schema_match",
       "status": "PASSED",
-      "details": "schemas identical",
-      "severity": "critical"
+      "severity": "critical",
+      "details": "schemas identical"
     },
     {
       "name": "column_level_diff",
       "status": "PASSED",
-      "details": "all numeric columns within tolerance",
-      "severity": "warning"
+      "severity": "warning",
+      "details": "all numeric columns within tolerance"
     }
   ],
   "analysis_result": {
     "source": "pattern_matcher",
-    "diagnosis": "ANSI SQL mode is enabled by default in Spark 4.0 - division by zero now throws instead of returning NULL\n",
-    "action": "config_fix",
-    "auto_fix": true,
+    "diagnosis": "ANSI SQL mode is enabled by default in Spark 4.0 - division by zero now throws instead of returning NULL",
     "fix_config": {
       "key": "spark.sql.ansi.enabled",
       "value": "false"

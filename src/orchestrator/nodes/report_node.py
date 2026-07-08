@@ -27,7 +27,7 @@ def make_generate_report_node(state_store: StateStore, reports_dir: str):
         state_store.record_event(
             run_id, phase="REPORT", event="report_generated", report_path=str(html_path)
         )
-        state_store.update_run_status(run_id, phase="PR")
+        state_store.update_run_status(run_id, phase="PR", report_path=str(html_path))
 
         return {"report_path": str(html_path), "phase": "PR"}
 
