@@ -17,6 +17,8 @@ import json
 import sys
 from pathlib import Path
 
+import structlog
+
 from src.config.settings import Settings
 from src.orchestrator.graph import PROJECT_ROOT, run_upgrade_test
 from src.tools.github_client import GitHubAPIError, GitHubClient
@@ -98,6 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    # structlog defaults to stdout, which would corrupt the JSON this CLI
+    # prints there (e.g. `run`'s summary, `status`'s snapshot) - logs belong
+    # on stderr so stdout stays machine-parseable.
+    structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sys.stderr))
+
     parser = build_parser()
     args = parser.parse_args()
     args.func(args)
