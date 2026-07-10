@@ -128,6 +128,49 @@ python -m src.cli status --run-id <run_id>
 python -m src.cli cleanup --run-id <run_id>
 ```
 
+## Future enhancements
+
+A code review of the completed local build (2026-07-10) surfaced several
+real findings. The small, contained ones were fixed immediately since they
+affected assumptions already baked into the AWS cost estimate below
+(redundant baseline reruns on retry, N separate Spark actions instead of
+one batched `agg()` in the validator, a hardcoded modification-file index).
+The rest were deliberately deferred rather than expanding scope mid-build:
+
+- **Stronger data validation** — `column_level_diff` currently compares
+  column sums only, which can miss compensating errors (row A +100, row B
+  -100 nets to zero). Extending the existing batched `agg()` call to also
+  compare `count`/`avg`/`min`/`max`, or moving to `exceptAll`/join-based
+  per-row diffing, would close this gap.
+- **Fleet mode** — `TestManifest.pipeline` is a single object today; testing
+  many pipelines in one run would mean a manifest schema redesign plus
+  LangGraph `Send`-based fan-out and an aggregate report.
+- **Human-in-the-loop approval for LLM-diagnosed fixes** — the LLM fallback
+  always escalates today rather than auto-applying, since its
+  `fix_suggestion` is free text, not a structured `{key, value}` pair. A
+  structured, Pydantic-validated LLM output plus a LangGraph `interrupt`
+  node would let a human approve an LLM-proposed fix instead of it always
+  requiring a fully manual resolution.
+- **Static pre-flight scanning** — AST/SQL-lineage scanning of pipeline code
+  for known-breaking API usage before running anything, to triage which
+  pipelines even need a full run.
+- **Self-improving pattern library** — capture human-resolved escalations
+  back into `known_failure_patterns` so the same failure auto-fixes next
+  time.
+- **Generalizing beyond Spark version bumps** — Delta upgrades, Python
+  version bumps, EMR release migrations; the orchestrator graph barely
+  changes, only the manifest's patterns/modifications would.
+- **CI-native mode** — run as a GitHub Actions check on any PR touching
+  `spark_version`.
+- **Mitigation vs. remediation labeling** — flag in the PR body when an
+  applied fix defers the real migration (e.g. disabling ANSI mode) rather
+  than actually fixing the pipeline for the new Spark version.
+
 ## Status
 
-Under active development — see the build plan for step-by-step progress.
+Steps 1-13 of the local build are complete and verified end-to-end via the
+real CLI against real GitHub — see [`docs/sample-report/`](docs/sample-report)
+for a real report and the orchestrator graph above for the full flow. Step
+14 (swapping local mocks for real AWS infrastructure) is planned in
+[`docs/aws-deployment-plan.md`](docs/aws-deployment-plan.md) but not yet
+started.
