@@ -16,7 +16,7 @@ import yaml
 from src.analysis.llm_analyzer import LLMAnalyzer
 from src.analysis.log_reader import LogReader
 from src.analysis.pattern_matcher import PatternMatcher
-from src.config.manifest import TestManifest
+from src.config.manifest import FileModification, TestManifest
 from src.orchestrator.state import UpgradeTestState
 from src.tools.github_client import GitHubClient
 from src.tools.state_store import StateStore
@@ -78,7 +78,9 @@ def make_analyze_logs_node(
 
         if analysis_result["auto_fix"] and retry_count < max_retries:
             fix_config = analysis_result["fix_config"]
-            config_file = manifest.source_control.target.modifications[0].file
+            config_file = _find_spark_config_file(
+                github_client, state["target_branch"], manifest.source_control.target.modifications
+            )
             _apply_fix_to_target_branch(
                 github_client,
                 branch=state["target_branch"],
@@ -130,6 +132,31 @@ def make_analyze_logs_node(
         }
 
     return analyze_logs
+
+
+def _find_spark_config_file(
+    github_client: GitHubClient, branch: str, modifications: list[FileModification]
+) -> str:
+    """Locates the manifest-declared file that actually holds a spark_config
+    block, instead of assuming it's always modifications[0] - a manifest can
+    list multiple files to modify (e.g. a version bump in one file, an
+    unrelated change in another), and the fix needs to land in the one a
+    Spark job actually reads its config from."""
+    for modification in modifications:
+        if not modification.file.endswith((".yaml", ".yml")):
+            continue
+        content, _ = github_client.get_file_content(modification.file, branch)
+        try:
+            parsed = yaml.safe_load(content)
+        except yaml.YAMLError:
+            continue
+        if isinstance(parsed, dict) and "spark_config" in parsed:
+            return modification.file
+
+    # Fall back to the first modification rather than raising, so a manifest
+    # that hasn't adopted the spark_config convention yet still behaves as
+    # it did before this fix.
+    return modifications[0].file
 
 
 def _apply_fix_to_target_branch(

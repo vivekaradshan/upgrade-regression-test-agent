@@ -41,11 +41,21 @@ def make_execute_jobs_node(
 
         baseline_dir = os.path.join(workspace_dir, run_id, "baseline")
         target_dir = os.path.join(workspace_dir, run_id, "target")
-        _sync_local_checkout(clone_url, state["baseline_branch"], baseline_dir)
+
+        # The baseline branch never changes across a run's retries - only
+        # the target branch gets auto-fix commits - so once baseline has
+        # succeeded once, re-syncing and re-running it on every retry would
+        # just be a duplicate billable job (EMR) for a result that can't
+        # change. Reuse the prior result instead.
+        baseline_already_succeeded = state.get("baseline_execution", {}).get("status") == "SUCCEEDED"
+
+        if not baseline_already_succeeded:
+            _sync_local_checkout(clone_url, state["baseline_branch"], baseline_dir)
         _sync_local_checkout(clone_url, state["target_branch"], target_dir)
 
         data_path = os.path.join(workspace_dir, run_id, "data", "transactions.csv")
-        _generate_mock_data(baseline_dir, data_path)
+        if not Path(data_path).exists():
+            _generate_mock_data(baseline_dir, data_path)
 
         log_dir = os.path.join(workspace_dir, run_id, "logs")
         timeout_seconds = manifest.execution.timeouts.single_pipeline_seconds
@@ -57,19 +67,26 @@ def make_execute_jobs_node(
         baseline_output = os.path.join(baseline_dir, manifest.execution.output_base, run_id, "baseline")
         target_output = os.path.join(target_dir, manifest.execution.output_base, run_id, "target")
 
-        baseline_arn = step_functions.start_execution(
-            state_machine_arn="arn:aws:states:local:mock:stateMachine:baseline",
-            input={
-                "entry_script": os.path.join(baseline_dir, manifest.pipeline.entry_script),
-                "input_path": data_path,
-                "output_path": baseline_output,
-                "spark_config": _effective_spark_config(baseline_dir, manifest.pipeline.spark_config),
-                "spark_version": manifest.execution.baseline_spark_version,
-                "log_dir": log_dir,
-                "cwd": baseline_dir,
-                "timeout_seconds": timeout_seconds,
-            },
-        )["executionArn"]
+        if baseline_already_succeeded:
+            baseline_result = {
+                "status": state["baseline_execution"]["status"],
+                "output": {"log_path": state["baseline_execution"]["log_path"]},
+            }
+        else:
+            baseline_arn = step_functions.start_execution(
+                state_machine_arn="arn:aws:states:local:mock:stateMachine:baseline",
+                input={
+                    "entry_script": os.path.join(baseline_dir, manifest.pipeline.entry_script),
+                    "input_path": data_path,
+                    "output_path": baseline_output,
+                    "spark_config": _effective_spark_config(baseline_dir, manifest.pipeline.spark_config),
+                    "spark_version": manifest.execution.baseline_spark_version,
+                    "log_dir": log_dir,
+                    "cwd": baseline_dir,
+                    "timeout_seconds": timeout_seconds,
+                },
+            )["executionArn"]
+            baseline_result = _wait_for_completion(step_functions, baseline_arn, poll_interval_seconds)
 
         target_arn = step_functions.start_execution(
             state_machine_arn="arn:aws:states:local:mock:stateMachine:target",
@@ -84,8 +101,6 @@ def make_execute_jobs_node(
                 "timeout_seconds": timeout_seconds,
             },
         )["executionArn"]
-
-        baseline_result = _wait_for_completion(step_functions, baseline_arn, poll_interval_seconds)
         target_result = _wait_for_completion(step_functions, target_arn, poll_interval_seconds)
 
         state_store.update_pipeline_status(

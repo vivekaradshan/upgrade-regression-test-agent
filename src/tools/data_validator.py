@@ -92,10 +92,20 @@ class DataValidator:
             and f.name in target_df.columns
         ]
 
+        if not numeric_columns:
+            return CheckResult("column_level_diff", "PASSED", "no numeric columns to compare", severity)
+
+        # One agg() covering every column, not one agg().collect() per
+        # column: each .collect() is a separate full-table Spark action, so
+        # N columns previously meant 2N table scans (N on baseline, N on
+        # target) instead of just 2.
+        baseline_sums = baseline_df.agg(*[F.sum(c) for c in numeric_columns]).collect()[0]
+        target_sums = target_df.agg(*[F.sum(c) for c in numeric_columns]).collect()[0]
+
         diffs = {}
-        for column in numeric_columns:
-            baseline_sum = baseline_df.agg(F.sum(column)).collect()[0][0] or 0.0
-            target_sum = target_df.agg(F.sum(column)).collect()[0][0] or 0.0
+        for i, column in enumerate(numeric_columns):
+            baseline_sum = baseline_sums[i] or 0.0
+            target_sum = target_sums[i] or 0.0
 
             if baseline_sum == 0:
                 relative_diff = 0.0 if target_sum == 0 else float("inf")
