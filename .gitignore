@@ -12,3 +12,13 @@ reports/
 .env
 *.log
 !tests/fixtures/*.log
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
