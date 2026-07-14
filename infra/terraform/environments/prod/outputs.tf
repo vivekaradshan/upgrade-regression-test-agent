@@ -65,3 +65,11 @@ output "lambda_generate_report_arn" {
 output "lambda_raise_pr_arn" {
   value = aws_lambda_function.raise_pr.arn
 }
+
+output "lambda_read_validation_results_arn" {
+  value = aws_lambda_function.read_validation_results.arn
+}
+
+output "state_machine_arn" {
+  value = aws_sfn_state_machine.orchestrator.arn
+}

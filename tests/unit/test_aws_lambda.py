@@ -79,6 +79,24 @@ class TestPrepareExecutionHandler:
 
         assert effective["spark.sql.ansi.enabled"] == "false"  # branch wins, not manifest default
 
+    def test_effective_spark_config_strips_spark_master(self, manifest_dict):
+        from src.aws_lambda import prepare_execution_handler as peh
+        from src.config.manifest import TestManifest
+
+        manifest = TestManifest.model_validate(manifest_dict)
+        github_client = MagicMock()
+        github_client.get_file_content.return_value = ("spark_config: {}\n", "sha123")
+
+        effective = peh._effective_spark_config(
+            github_client, manifest, "some-branch", "3.5.4"
+        )
+
+        # manifest.pipeline.spark_config sets spark.master for local runs -
+        # EMR Serverless rejects this outright (confirmed via a real
+        # failed job run: ValidationException, "Option 'spark.master' is
+        # not supported").
+        assert "spark.master" not in effective
+
     def test_effective_spark_config_injects_ansi_default_for_spark4(self, manifest_dict):
         from src.aws_lambda import prepare_execution_handler as peh
         from src.config.manifest import TestManifest
@@ -188,6 +206,33 @@ class TestAnalyzeLogsHandler:
         mock_s3.download_file.assert_not_called()
         assert result["phase"] == "VALIDATE"
 
+    def test_escalates_when_emr_task_itself_failed_with_no_job_run_id(self, manifest_dict):
+        from src.aws_lambda import analyze_logs_handler as alh
+
+        event = {
+            "run_id": "run-1",
+            "manifest": manifest_dict,
+            "target_branch": "target-branch",
+            # No jobRunId - the EMR task itself failed (e.g. a rejected
+            # spark-submit parameter) before any job run started.
+            "target_execution": {"status": "FAILED"},
+            "retry_count": 0,
+        }
+
+        mock_state_store = MagicMock()
+
+        with (
+            patch.object(alh, "get_state_store", return_value=mock_state_store),
+            patch.object(alh, "s3") as mock_s3,
+        ):
+            result = alh.handler(event, context=None)
+
+        mock_s3.download_file.assert_not_called()
+        assert result["phase"] == "REPORT"
+        assert result["status"] == "FAILED"
+        assert result["analysis_result"]["source"] == "infrastructure"
+        mock_state_store.update_pipeline_status.assert_called_once()
+
     def test_downloads_and_decompresses_stderr_log(self, tmp_path):
         from src.aws_lambda import analyze_logs_handler as alh
         import gzip
@@ -237,3 +282,37 @@ class TestGenerateReportHandler:
         assert result["phase"] == "PR"
         assert mock_s3.put_object.call_count == 2
         mock_state_store.update_run_status.assert_called_once()
+
+
+class TestReadValidationResultsHandler:
+    def test_reads_results_from_s3_and_merges_into_state(self, manifest_dict):
+        from src.aws_lambda import read_validation_results_handler as rvrh
+
+        event = {
+            "run_id": "run-1",
+            "manifest": manifest_dict,
+            "emr_job": {"resultsPath": "s3://test-artifacts-bucket/run-1/validate/results.json"},
+        }
+
+        results_payload = {
+            "overall_status": "PASSED",
+            "checks": [{"name": "row_count_match", "status": "PASSED", "severity": "critical", "details": "ok"}],
+        }
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps(results_payload).encode("utf-8")
+        mock_state_store = MagicMock()
+
+        with (
+            patch.object(rvrh, "get_state_store", return_value=mock_state_store),
+            patch.object(rvrh, "s3") as mock_s3,
+        ):
+            mock_s3.get_object.return_value = {"Body": mock_body}
+            result = rvrh.handler(event, context=None)
+
+        mock_s3.get_object.assert_called_once_with(
+            Bucket="test-artifacts-bucket", Key="run-1/validate/results.json"
+        )
+        assert result["validation_results"]["overall_status"] == "PASSED"
+        assert result["phase"] == "REPORT"
+        assert result["status"] == "PASSED"
+        mock_state_store.update_pipeline_status.assert_called_once()

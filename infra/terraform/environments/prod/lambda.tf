@@ -347,3 +347,48 @@ resource "aws_lambda_function" "raise_pr" {
     variables = local.lambda_common_env
   }
 }
+
+# ---- read_validation_results ----
+
+resource "aws_iam_role" "read_validation_results" {
+  name               = "${var.project_name}-read-validation-results"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+data "aws_iam_policy_document" "read_validation_results_permissions" {
+  source_policy_documents = [data.aws_iam_policy_document.lambda_basic_logging.json]
+  statement {
+    sid       = "StateStore"
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+    resources = [aws_dynamodb_table.runs.arn]
+  }
+  statement {
+    sid       = "ReadValidationResults"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "read_validation_results" {
+  name   = "${var.project_name}-read-validation-results-permissions"
+  role   = aws_iam_role.read_validation_results.id
+  policy = data.aws_iam_policy_document.read_validation_results_permissions.json
+}
+
+resource "aws_lambda_function" "read_validation_results" {
+  function_name    = "${var.project_name}-read-validation-results"
+  role             = aws_iam_role.read_validation_results.arn
+  handler          = "src.aws_lambda.read_validation_results_handler.handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 256
+  filename         = "${path.module}/../../../build/lambda_placeholder.zip"
+  source_code_hash = filebase64sha256("${path.module}/../../../build/lambda_placeholder.zip")
+  layers           = [aws_lambda_layer_version.shared.arn]
+
+  environment {
+    variables = local.lambda_common_env
+  }
+}

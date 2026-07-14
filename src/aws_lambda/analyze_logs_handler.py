@@ -41,12 +41,41 @@ LOGS_PREFIX = "logs"
 
 def handler(event: dict, context) -> dict:
     manifest = event["manifest"]
+    run_id = event["run_id"]
+    target_execution = event["target_execution"]
+
+    # target_execution can be {"status": "FAILED"} with no jobRunId at all -
+    # not the Spark job failing, but the EMR *task itself* failing before a
+    # job run ever started (e.g. an invalid spark-submit parameter rejected
+    # by the EMR Serverless API). There's no Spark log to fetch or analyze
+    # in that case - escalate immediately with a diagnosis describing the
+    # infrastructure failure, in the same shape analyze_node.py's own
+    # escalation path returns, rather than forcing this through log
+    # analysis that has nothing to read.
+    if target_execution.get("status") != "SUCCEEDED" and "jobRunId" not in target_execution:
+        state_store = get_state_store()
+        diagnosis = "Target EMR job never started (Step Functions task failure, not a Spark job failure)"
+        analysis_result = {
+            "source": "infrastructure",
+            "diagnosis": diagnosis,
+            "action": "escalate",
+            "auto_fix": False,
+            "fix_config": None,
+        }
+        state_store.update_pipeline_status(
+            run_id, manifest["pipeline"]["id"], status="FAILED", diagnosis=diagnosis, error_message=diagnosis
+        )
+        state_store.record_event(run_id, phase="ANALYZE", event="escalated", reason="emr_task_failure")
+        state_store.update_run_status(run_id, phase="REPORT", status="FAILED")
+        return merge_update(
+            event, {"analysis_result": analysis_result, "phase": "REPORT", "status": "FAILED", "error": diagnosis}
+        )
+
     github_client = get_github_client(manifest)
     state_store = get_state_store()
     llm_analyzer = get_llm_analyzer(manifest)
 
     local_state = dict(event)
-    target_execution = event["target_execution"]
     if target_execution.get("status") != "SUCCEEDED":
         local_log_path = _download_and_decompress_stderr(
             application_id=event["emr_job"]["applicationId"],

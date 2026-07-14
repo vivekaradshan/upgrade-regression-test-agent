@@ -129,6 +129,14 @@ def _prepare_validate_job(event: dict, manifest: TestManifest, run_id: str) -> d
     }
 
 
+# EMR Serverless manages its own execution environment and rejects this
+# override outright (confirmed by a real failed job run:
+# EMRServerless.ValidationException: "Option 'spark.master' is not
+# supported"). The manifest sets it for local[*] execution locally; EMR
+# has no equivalent concept to set.
+UNSUPPORTED_ON_EMR_SERVERLESS = {"spark.master"}
+
+
 def _effective_spark_config(github_client, manifest: TestManifest, branch: str, spark_version: str) -> dict:
     manifest_spark_config = dict(manifest.pipeline.spark_config)
 
@@ -145,6 +153,9 @@ def _effective_spark_config(github_client, manifest: TestManifest, branch: str, 
         branch_spark_config = parsed.get("spark_config", {})
 
     effective = {**manifest_spark_config, **branch_spark_config}
+
+    for key in UNSUPPORTED_ON_EMR_SERVERLESS:
+        effective.pop(key, None)
 
     # Kept as an explicit safety net even though real Spark 4 already
     # defaults ansi.enabled=true - matches the same belt-and-suspenders
