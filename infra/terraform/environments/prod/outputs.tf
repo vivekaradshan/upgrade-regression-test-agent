@@ -41,3 +41,27 @@ output "emr_target_application_id" {
 output "pyyaml_pyfiles_s3_uri" {
   value = "s3://${aws_s3_bucket.artifacts.id}/${aws_s3_object.pyyaml_pyfiles.key}"
 }
+
+output "lambda_create_branches_arn" {
+  value = aws_lambda_function.create_branches.arn
+}
+
+output "lambda_mock_build_arn" {
+  value = aws_lambda_function.mock_build.arn
+}
+
+output "lambda_prepare_execution_arn" {
+  value = aws_lambda_function.prepare_execution.arn
+}
+
+output "lambda_analyze_logs_arn" {
+  value = aws_lambda_function.analyze_logs.arn
+}
+
+output "lambda_generate_report_arn" {
+  value = aws_lambda_function.generate_report.arn
+}
+
+output "lambda_raise_pr_arn" {
+  value = aws_lambda_function.raise_pr.arn
+}

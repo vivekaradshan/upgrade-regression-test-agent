@@ -1,0 +1,11 @@
+# Runtime dependencies for the Lambda layer only - not the full dev
+# requirements.txt (which includes pytest, moto, pyspark, etc. that have
+# no business running inside a Lambda function). boto3 is excluded since
+# it already ships in the Lambda runtime.
+httpx
+pydantic
+pyyaml
+openai
+structlog
+jinja2
+python-dotenv

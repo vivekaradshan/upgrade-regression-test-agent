@@ -6,7 +6,6 @@ real infrastructure with no other code changes required.
 from __future__ import annotations
 
 import boto3
-from moto import mock_aws
 
 
 class AWSClientFactory:
@@ -16,6 +15,16 @@ class AWSClientFactory:
         self._mock = None
 
         if self.use_mocks:
+            # Imported lazily, not at module level: moto is a dev/test-only
+            # dependency, deliberately excluded from the Lambda layer's
+            # runtime deps (infra/lambda-requirements.txt) since it's
+            # unused and unwanted in production. A module-level import
+            # broke every Lambda handler that transitively imports this
+            # module via StateStore, even though use_mocks=False never
+            # actually touches moto - confirmed by a real failed Lambda
+            # invocation (ImportModuleError: No module named 'moto').
+            from moto import mock_aws
+
             self._mock = mock_aws()
             self._mock.start()
 
