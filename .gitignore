@@ -22,3 +22,4 @@ reports/
 !*.tfvars.example
 crash.log
 crash.*.log
+infra/build/

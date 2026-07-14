@@ -165,3 +165,104 @@ resource "aws_secretsmanager_secret_version" "openai_api_key" {
   secret_id     = aws_secretsmanager_secret.openai_api_key.id
   secret_string = var.openai_api_key
 }
+
+# --- Phase 14.2: EMR Serverless ---
+
+resource "aws_iam_role" "emr_serverless_execution" {
+  name = "${var.project_name}-emr-execution"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "emr-serverless.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+data "aws_iam_policy_document" "emr_execution_permissions" {
+  statement {
+    sid    = "S3Access"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket",
+    ]
+    resources = [
+      aws_s3_bucket.artifacts.arn,
+      "${aws_s3_bucket.artifacts.arn}/*",
+      aws_s3_bucket.reports.arn,
+      "${aws_s3_bucket.reports.arn}/*",
+    ]
+  }
+
+  statement {
+    sid    = "Logging"
+    effect = "Allow"
+    actions = [
+      "logs:PutLogEvents", "logs:CreateLogStream", "logs:CreateLogGroup",
+      "logs:DescribeLogGroups", "logs:DescribeLogStreams",
+    ]
+    resources = [
+      "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/emr-serverless/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "emr_serverless_execution" {
+  name   = "${var.project_name}-emr-execution-permissions"
+  role   = aws_iam_role.emr_serverless_execution.id
+  policy = data.aws_iam_policy_document.emr_execution_permissions.json
+}
+
+# Two applications, not one: EMR Serverless fixes the release label (and
+# therefore the Spark version) at the application level, not per job run.
+# emr-7.13.0 is the latest classic EMR release label (Spark 3.5.6, closest
+# match to the manifest's baseline_spark_version 3.5.4). emr-spark-8.0.0 is
+# a newer, separate release-label track bundling Spark 4.0.2 - confirmed
+# via `aws emr describe-release-label` before writing this, since EMR's
+# release labels lag behind raw Apache Spark releases and Spark 4.0
+# support isn't available under the classic emr-7.x/emr-6.x naming line.
+resource "aws_emrserverless_application" "baseline" {
+  name          = "${var.project_name}-baseline"
+  release_label = "emr-7.13.0"
+  type          = "SPARK"
+
+  auto_start_configuration {
+    enabled = true
+  }
+
+  auto_stop_configuration {
+    enabled              = true
+    idle_timeout_minutes = 5
+  }
+}
+
+resource "aws_emrserverless_application" "target" {
+  name          = "${var.project_name}-target"
+  release_label = "emr-spark-8.0.0"
+  type          = "SPARK"
+
+  auto_start_configuration {
+    enabled = true
+  }
+
+  auto_stop_configuration {
+    enabled              = true
+    idle_timeout_minutes = 5
+  }
+}
+
+# EMR Serverless's default Spark Python environment doesn't include
+# PyYAML - confirmed by an actual failed job run during Phase 14.2
+# verification (ModuleNotFoundError: No module named 'yaml'), since
+# pipeline/spark_job.py imports it at module level for optional --config
+# support. Run infra/scripts/build_pyyaml_pyfiles.sh to (re)generate this
+# file before applying; Terraform uploads whatever's currently built
+# rather than building it itself, keeping the build step explicit and
+# inspectable.
+resource "aws_s3_object" "pyyaml_pyfiles" {
+  bucket = aws_s3_bucket.artifacts.id
+  key    = "dependencies/pyyaml.zip"
+  source = "${path.module}/../../../build/pyyaml.zip"
+  etag   = filemd5("${path.module}/../../../build/pyyaml.zip")
+}

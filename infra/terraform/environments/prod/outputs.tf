@@ -25,3 +25,19 @@ output "github_token_secret_arn" {
 output "openai_api_key_secret_arn" {
   value = aws_secretsmanager_secret.openai_api_key.arn
 }
+
+output "emr_execution_role_arn" {
+  value = aws_iam_role.emr_serverless_execution.arn
+}
+
+output "emr_baseline_application_id" {
+  value = aws_emrserverless_application.baseline.id
+}
+
+output "emr_target_application_id" {
+  value = aws_emrserverless_application.target.id
+}
+
+output "pyyaml_pyfiles_s3_uri" {
+  value = "s3://${aws_s3_bucket.artifacts.id}/${aws_s3_object.pyyaml_pyfiles.key}"
+}
