@@ -21,6 +21,7 @@ decompressing the S3 log into /tmp first.
 from __future__ import annotations
 
 import gzip
+import json
 import os
 
 import boto3
@@ -39,20 +40,45 @@ ARTIFACTS_BUCKET = os.environ["ARTIFACTS_BUCKET"]
 LOGS_PREFIX = "logs"
 
 
+def _recover_job_run_id(target_execution: dict) -> dict:
+    """The emr-serverless:startJobRun.sync Task's Catch block only exposes
+    the failure as an opaque Error/Cause string pair - it can't distinguish
+    "the job ran and Spark itself failed" (Cause is the JSON job-run
+    description, State=FAILED, JobRunId present) from "the task failed
+    before any job run started" (Cause is an arbitrary, non-JSON message,
+    e.g. an EMRServerless.ValidationException). The state machine passes
+    the raw Cause through as target_execution["cause"] either way; recover
+    jobRunId/status from it here where malformed JSON can be handled
+    without aborting the whole execution (ASL Pass states can't Catch).
+    """
+    if "jobRunId" in target_execution or "cause" not in target_execution:
+        return target_execution
+
+    try:
+        parsed = json.loads(target_execution["cause"])
+        job_run_id = parsed["JobRunId"]
+        status = parsed["State"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return target_execution
+
+    return {**target_execution, "status": status, "jobRunId": job_run_id}
+
+
 def handler(event: dict, context) -> dict:
     manifest = event["manifest"]
     run_id = event["run_id"]
-    target_execution = event["target_execution"]
+    target_execution = _recover_job_run_id(event["target_execution"])
 
-    # target_execution can be {"status": "FAILED"} with no jobRunId at all -
-    # not the Spark job failing, but the EMR *task itself* failing before a
-    # job run ever started (e.g. an invalid spark-submit parameter rejected
-    # by the EMR Serverless API). There's no Spark log to fetch or analyze
-    # in that case - escalate immediately with a diagnosis describing the
-    # infrastructure failure, in the same shape analyze_node.py's own
-    # escalation path returns, rather than forcing this through log
-    # analysis that has nothing to read.
-    if target_execution.get("status") != "SUCCEEDED" and "jobRunId" not in target_execution:
+    # target_execution can still be {"status": "FAILED"} with no jobRunId at
+    # all after recovery - the EMR *task itself* failing before a job run
+    # ever started (e.g. an invalid spark-submit parameter rejected by the
+    # EMR Serverless API, as opposed to a job that started and whose Spark
+    # code then failed - see _recover_job_run_id). There's no Spark log to
+    # fetch or analyze in that case - escalate immediately with a diagnosis
+    # describing the infrastructure failure, in the same shape
+    # analyze_node.py's own escalation path returns, rather than forcing
+    # this through log analysis that has nothing to read.
+    if target_execution.get("status") != "SUCCESS" and "jobRunId" not in target_execution:
         state_store = get_state_store()
         diagnosis = "Target EMR job never started (Step Functions task failure, not a Spark job failure)"
         analysis_result = {
@@ -75,8 +101,14 @@ def handler(event: dict, context) -> dict:
     state_store = get_state_store()
     llm_analyzer = get_llm_analyzer(manifest)
 
+    # analyze_node.py (shared, unmodified) checks target_execution["status"]
+    # against the local mock vocabulary ("SUCCEEDED"/"FAILED") - EMR
+    # Serverless reports "SUCCESS"/"FAILED" instead, so normalize before
+    # handing state to the shared node.
     local_state = dict(event)
-    if target_execution.get("status") != "SUCCEEDED":
+    if target_execution.get("status") == "SUCCESS":
+        local_state["target_execution"] = {**target_execution, "status": "SUCCEEDED"}
+    else:
         local_log_path = _download_and_decompress_stderr(
             application_id=event["emr_job"]["applicationId"],
             job_run_id=target_execution["jobRunId"],

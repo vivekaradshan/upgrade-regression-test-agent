@@ -191,7 +191,10 @@ class TestAnalyzeLogsHandler:
             "run_id": "run-1",
             "manifest": manifest_dict,
             "target_branch": "target-branch",
-            "target_execution": {"status": "SUCCEEDED"},
+            # EMR Serverless reports "SUCCESS", not the local mock's
+            # "SUCCEEDED" - the handler normalizes this before calling the
+            # shared analyze_node.
+            "target_execution": {"status": "SUCCESS"},
             "retry_count": 0,
         }
 
@@ -232,6 +235,66 @@ class TestAnalyzeLogsHandler:
         assert result["status"] == "FAILED"
         assert result["analysis_result"]["source"] == "infrastructure"
         mock_state_store.update_pipeline_status.assert_called_once()
+
+    def test_recovers_job_run_id_from_catch_cause_when_job_actually_ran(self, manifest_dict):
+        from src.aws_lambda import analyze_logs_handler as alh
+
+        # emr-serverless:startJobRun.sync's Catch block loses jobRunId -
+        # the state machine passes the raw Cause JSON through instead. When
+        # the job actually ran and Spark itself failed, that Cause contains
+        # State/JobRunId and log analysis should proceed normally rather
+        # than escalating as an infrastructure failure.
+        cause = json.dumps({"JobRunId": "job-123", "State": "FAILED"})
+        event = {
+            "run_id": "run-1",
+            "manifest": manifest_dict,
+            "target_branch": "target-branch",
+            "target_execution": {"status": "FAILED", "cause": cause},
+            "emr_job": {"applicationId": "app-1"},
+            "retry_count": 0,
+        }
+
+        with (
+            patch.object(alh, "get_github_client", return_value=MagicMock()),
+            patch.object(alh, "get_state_store", return_value=MagicMock()),
+            patch.object(alh, "get_llm_analyzer", return_value=MagicMock()),
+            patch.object(alh, "_download_and_decompress_stderr", return_value="/tmp/log") as mock_download,
+            patch.object(alh, "make_analyze_logs_node") as mock_make_node,
+        ):
+            mock_make_node.return_value = lambda state: {"phase": "REPORT"}
+            result = alh.handler(event, context=None)
+
+        mock_download.assert_called_once_with(application_id="app-1", job_run_id="job-123")
+        assert result["phase"] == "REPORT"
+
+    def test_escalates_when_catch_cause_is_not_json(self, manifest_dict):
+        from src.aws_lambda import analyze_logs_handler as alh
+
+        # A task-level failure before any job run starts (e.g. a rejected
+        # spark-submit parameter) produces a non-JSON Cause - recovery must
+        # fail gracefully and fall through to the infrastructure escalation
+        # path rather than raising.
+        event = {
+            "run_id": "run-1",
+            "manifest": manifest_dict,
+            "target_branch": "target-branch",
+            "target_execution": {
+                "status": "FAILED",
+                "cause": "EMRServerless.ValidationException: Option 'spark.master' is not supported",
+            },
+            "retry_count": 0,
+        }
+
+        mock_state_store = MagicMock()
+
+        with (
+            patch.object(alh, "get_state_store", return_value=mock_state_store),
+            patch.object(alh, "s3") as mock_s3,
+        ):
+            result = alh.handler(event, context=None)
+
+        mock_s3.download_file.assert_not_called()
+        assert result["analysis_result"]["source"] == "infrastructure"
 
     def test_downloads_and_decompresses_stderr_log(self, tmp_path):
         from src.aws_lambda import analyze_logs_handler as alh

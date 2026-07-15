@@ -68,14 +68,14 @@
                 }
               },
               "ResultSelector": {
-                "status.$": "$.JobRun.State",
-                "jobRunId.$": "$.JobRun.JobRunId"
+                "status.$": "$.State",
+                "jobRunId.$": "$.JobRunId"
               },
               "ResultPath": "$.baseline_execution",
               "Catch": [
                 {
                   "ErrorEquals": ["States.ALL"],
-                  "ResultPath": "$.baseline_execution",
+                  "ResultPath": "$.errorInfo",
                   "Next": "BaselineFailed"
                 }
               ],
@@ -83,7 +83,10 @@
             },
             "BaselineFailed": {
               "Type": "Pass",
-              "Parameters": { "status": "FAILED" },
+              "Parameters": {
+                "status": "FAILED",
+                "cause.$": "$.errorInfo.Cause"
+              },
               "ResultPath": "$.baseline_execution",
               "End": true
             }
@@ -127,14 +130,14 @@
                 }
               },
               "ResultSelector": {
-                "status.$": "$.JobRun.State",
-                "jobRunId.$": "$.JobRun.JobRunId"
+                "status.$": "$.State",
+                "jobRunId.$": "$.JobRunId"
               },
               "ResultPath": "$.target_execution",
               "Catch": [
                 {
                   "ErrorEquals": ["States.ALL"],
-                  "ResultPath": "$.target_execution",
+                  "ResultPath": "$.errorInfo",
                   "Next": "TargetFailed"
                 }
               ],
@@ -142,7 +145,10 @@
             },
             "TargetFailed": {
               "Type": "Pass",
-              "Parameters": { "status": "FAILED" },
+              "Parameters": {
+                "status": "FAILED",
+                "cause.$": "$.errorInfo.Cause"
+              },
               "ResultPath": "$.target_execution",
               "End": true
             }
@@ -210,17 +216,26 @@
         }
       },
       "ResultSelector": {
-        "status.$": "$.JobRun.State",
-        "jobRunId.$": "$.JobRun.JobRunId"
+        "status.$": "$.State",
+        "jobRunId.$": "$.JobRunId"
       },
       "ResultPath": "$.target_execution",
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
-          "ResultPath": "$.target_execution",
-          "Next": "AnalyzeLogs"
+          "ResultPath": "$.errorInfo",
+          "Next": "TargetOnlyFailed"
         }
       ],
+      "Next": "AnalyzeLogs"
+    },
+    "TargetOnlyFailed": {
+      "Type": "Pass",
+      "Parameters": {
+        "status": "FAILED",
+        "cause.$": "$.errorInfo.Cause"
+      },
+      "ResultPath": "$.target_execution",
       "Next": "AnalyzeLogs"
     },
     "AnalyzeLogs": {
