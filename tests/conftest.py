@@ -21,5 +21,6 @@ for _var, _dummy in {
     "REPORTS_BUCKET": "test-reports-bucket",
     "PYYAML_PYFILES_S3_URI": "s3://test-artifacts-bucket/dependencies/pyyaml.zip",
     "VALIDATOR_PYFILES_S3_URI": "s3://test-artifacts-bucket/dependencies/validator_deps.zip",
+    "STATE_MACHINE_ARN": "arn:aws:states:us-east-1:123456789012:stateMachine:test-orchestrator",
 }.items():
     os.environ.setdefault(_var, _dummy)

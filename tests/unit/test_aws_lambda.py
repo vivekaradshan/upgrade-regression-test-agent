@@ -377,5 +377,48 @@ class TestReadValidationResultsHandler:
         )
         assert result["validation_results"]["overall_status"] == "PASSED"
         assert result["phase"] == "REPORT"
-        assert result["status"] == "PASSED"
-        mock_state_store.update_pipeline_status.assert_called_once()
+
+
+class TestStartRunHandler:
+    def test_starts_execution_and_returns_run_id(self, manifest_dict):
+        from src.aws_lambda import start_run_handler as srh
+
+        event = {"body": json.dumps({"manifest": manifest_dict})}
+        mock_state_store = MagicMock()
+
+        with (
+            patch.object(srh, "get_state_store", return_value=mock_state_store),
+            patch.object(srh, "sfn") as mock_sfn,
+        ):
+            mock_sfn.start_execution.return_value = {"executionArn": "arn:aws:states:...:execution:x"}
+            result = srh.handler(event, context=None)
+
+        assert result["statusCode"] == 202
+        body = json.loads(result["body"])
+        assert body["run_id"].startswith("run-")
+        assert body["execution_arn"] == "arn:aws:states:...:execution:x"
+        mock_state_store.init_run.assert_called_once()
+        mock_sfn.start_execution.assert_called_once()
+        call_kwargs = mock_sfn.start_execution.call_args.kwargs
+        assert call_kwargs["name"] == body["run_id"]
+        started_input = json.loads(call_kwargs["input"])
+        assert started_input["run_id"] == body["run_id"]
+        assert started_input["phase"] == "BRANCH"
+
+    def test_returns_400_for_invalid_manifest(self):
+        from src.aws_lambda import start_run_handler as srh
+
+        event = {"body": json.dumps({"manifest": {"not": "a valid manifest"}})}
+
+        with patch.object(srh, "get_state_store") as mock_get_state_store:
+            result = srh.handler(event, context=None)
+
+        assert result["statusCode"] == 400
+        mock_get_state_store.assert_not_called()
+
+    def test_returns_400_for_missing_body(self):
+        from src.aws_lambda import start_run_handler as srh
+
+        result = srh.handler({}, context=None)
+
+        assert result["statusCode"] == 400

@@ -73,3 +73,9 @@ output "lambda_read_validation_results_arn" {
 output "state_machine_arn" {
   value = aws_sfn_state_machine.orchestrator.arn
 }
+
+# Base endpoint (no path) - the CLI's UPGRADE_AGENT_API_ENDPOINT expects
+# this and appends /runs itself (see cli.py's cmd_run).
+output "api_endpoint" {
+  value = aws_apigatewayv2_api.runs.api_endpoint
+}

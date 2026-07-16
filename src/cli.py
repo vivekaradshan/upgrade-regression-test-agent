@@ -1,13 +1,20 @@
 """CLI entry point for the upgrade regression testing agent.
 
     python -m src.cli run --manifest manifests/spark-3.5-to-4.0.yaml
-    python -m src.cli status --run-id <run_id>
-    python -m src.cli cleanup --run-id <run_id>
+    python -m src.cli run --manifest manifests/spark-3.5-to-4.0.yaml --target aws
+    python -m src.cli status --run-id <run_id> [--target aws]
+    python -m src.cli cleanup --run-id <run_id> [--target aws]
 
-status/cleanup read workspace/state/<run_id>.json snapshots (the same
-files the dashboard reads) rather than DynamoDB directly, since the CLI
-runs in a separate process from whichever run started the orchestrator
-and moto's mocked DynamoDB only lives in-memory within that process.
+--target local (default) runs the LangGraph orchestrator in this process;
+status/cleanup then read workspace/state/<run_id>.json snapshots (the same
+files the dashboard reads) rather than DynamoDB directly, since moto's
+mocked DynamoDB only lives in-memory within the process that started it.
+
+--target aws POSTs to the deployed API Gateway endpoint instead, which
+starts a real Step Functions execution (see
+src/aws_lambda/start_run_handler.py); status/cleanup then read the run's
+state from real DynamoDB via StateStore, since an AWS-triggered run has
+no local snapshot file to read.
 """
 
 from __future__ import annotations
@@ -18,10 +25,16 @@ import sys
 from pathlib import Path
 
 import structlog
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
+from botocore.session import Session as BotocoreSession
 
+from src.config.manifest import ManifestLoader
 from src.config.settings import Settings
+from src.mock_infra.aws_clients import AWSClientFactory
 from src.orchestrator.graph import PROJECT_ROOT, run_upgrade_test
 from src.tools.github_client import GitHubAPIError, GitHubClient
+from src.tools.state_store import StateStore
 
 STATE_DIR = PROJECT_ROOT / "workspace" / "state"
 
@@ -34,7 +47,50 @@ def _load_snapshot(run_id: str) -> dict:
     return json.loads(snapshot_path.read_text())
 
 
+def _get_state_store() -> StateStore:
+    factory = AWSClientFactory(use_mocks=False)
+    return StateStore(factory.get_dynamodb_resource())
+
+
+def _signed_post(url: str, body: dict, region: str) -> dict:
+    """Signs the request with the caller's own AWS credentials (SigV4) -
+    the API Gateway route requires AWS_IAM authorization instead of a
+    separate API key, so no secret beyond the operator's existing AWS
+    credentials needs to be issued or stored for this."""
+    import httpx
+
+    session = BotocoreSession()
+    credentials = session.get_credentials()
+    if credentials is None:
+        print("No AWS credentials found (run `aws configure` or set AWS_* env vars)", file=sys.stderr)
+        sys.exit(1)
+
+    request = AWSRequest(method="POST", url=url, data=json.dumps(body), headers={"Content-Type": "application/json"})
+    SigV4Auth(credentials, "execute-api", region).add_auth(request)
+
+    response = httpx.post(url, content=request.body, headers=dict(request.headers))
+    if response.status_code >= 400:
+        print(f"API request failed ({response.status_code}): {response.text}", file=sys.stderr)
+        sys.exit(1)
+    return response.json()
+
+
 def cmd_run(args: argparse.Namespace) -> None:
+    if args.target == "aws":
+        settings = Settings()
+        if not settings.api_endpoint:
+            print("UPGRADE_AGENT_API_ENDPOINT is not set", file=sys.stderr)
+            sys.exit(1)
+
+        manifest = ManifestLoader.load_from_file(args.manifest)
+        result = _signed_post(
+            f"{settings.api_endpoint}/runs",
+            {"manifest": manifest.model_dump(mode="json")},
+            settings.aws_region,
+        )
+        print(json.dumps(result, indent=2))
+        return
+
     final_state = run_upgrade_test(args.manifest)
     print(
         json.dumps(
@@ -52,14 +108,21 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> None:
+    if args.target == "aws":
+        state_store = _get_state_store()
+        try:
+            metadata = state_store.get_run_metadata(args.run_id)
+        except KeyError:
+            print(f"No run found for run_id={args.run_id}", file=sys.stderr)
+            sys.exit(1)
+        pipelines = state_store.get_all_pipelines(args.run_id)
+        print(json.dumps({"run_id": args.run_id, "metadata": metadata, "pipelines": pipelines}, indent=2, default=str))
+        return
+
     print(json.dumps(_load_snapshot(args.run_id), indent=2))
 
 
-def cmd_cleanup(args: argparse.Namespace) -> None:
-    snapshot = _load_snapshot(args.run_id)
-    config = snapshot["metadata"]["config"]
-    source_control = config["source_control"]
-
+def _delete_branches(source_control: dict, run_id: str) -> None:
     settings = Settings()
     github_client = GitHubClient(
         token=settings.github_token,
@@ -68,7 +131,7 @@ def cmd_cleanup(args: argparse.Namespace) -> None:
     )
 
     prefix = source_control["target"]["branch_prefix"]
-    branches = [f"{prefix}/{args.run_id}-baseline", f"{prefix}/{args.run_id}-target"]
+    branches = [f"{prefix}/{run_id}-baseline", f"{prefix}/{run_id}-target"]
 
     for branch in branches:
         try:
@@ -80,20 +143,40 @@ def cmd_cleanup(args: argparse.Namespace) -> None:
     github_client.close()
 
 
+def cmd_cleanup(args: argparse.Namespace) -> None:
+    if args.target == "aws":
+        state_store = _get_state_store()
+        try:
+            metadata = state_store.get_run_metadata(args.run_id)
+        except KeyError:
+            print(f"No run found for run_id={args.run_id}", file=sys.stderr)
+            sys.exit(1)
+        source_control = metadata["config"]["source_control"]
+        _delete_branches(source_control, args.run_id)
+        return
+
+    snapshot = _load_snapshot(args.run_id)
+    source_control = snapshot["metadata"]["config"]["source_control"]
+    _delete_branches(source_control, args.run_id)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="upgrade-agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Run an upgrade test")
     run_parser.add_argument("--manifest", required=True, help="Path to the test manifest YAML")
+    run_parser.add_argument("--target", choices=["local", "aws"], default="local")
     run_parser.set_defaults(func=cmd_run)
 
     status_parser = subparsers.add_parser("status", help="Show a run's current status")
     status_parser.add_argument("--run-id", required=True)
+    status_parser.add_argument("--target", choices=["local", "aws"], default="local")
     status_parser.set_defaults(func=cmd_status)
 
     cleanup_parser = subparsers.add_parser("cleanup", help="Delete a run's GitHub branches")
     cleanup_parser.add_argument("--run-id", required=True)
+    cleanup_parser.add_argument("--target", choices=["local", "aws"], default="local")
     cleanup_parser.set_defaults(func=cmd_cleanup)
 
     return parser
