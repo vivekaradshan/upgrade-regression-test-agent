@@ -99,4 +99,17 @@ resource "aws_sfn_state_machine" "orchestrator" {
     raise_pr_arn                 = aws_lambda_function.raise_pr.arn
     read_validation_results_arn  = aws_lambda_function.read_validation_results.arn
   })
+
+  # Phase 14.6: full state-transition detail in CloudWatch Logs, not just
+  # the bounded Step Functions execution-history API - see observability.tf.
+  logging_configuration {
+    log_destination        = "${aws_cloudwatch_log_group.state_machine.arn}:*"
+    include_execution_data = true
+    level                   = "ALL"
+  }
+
+  depends_on = [
+    aws_iam_role_policy.step_functions_logging,
+    aws_cloudwatch_log_resource_policy.state_machine_log_delivery,
+  ]
 }
