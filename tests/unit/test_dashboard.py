@@ -1,10 +1,11 @@
 import json
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "dashboard"))
 
-from app import badge, format_duration, load_snapshots  # noqa: E402
+from app import badge, format_duration, load_aws_snapshots, load_snapshots  # noqa: E402
 
 
 def test_badge_maps_known_statuses_to_icons():
@@ -60,3 +61,18 @@ def test_load_snapshots_returns_empty_dict_when_dir_missing(tmp_path, monkeypatc
     monkeypatch.setattr(app, "STATE_DIR", tmp_path / "does-not-exist")
 
     assert load_snapshots() == {}
+
+
+def test_load_aws_snapshots_builds_same_shape_from_state_store():
+    mock_state_store = MagicMock()
+    mock_state_store.list_runs.return_value = [
+        {"run_id": "run-aws-1", "overall_status": "RUNNING", "phase": "BUILD"}
+    ]
+    mock_state_store.get_all_pipelines.return_value = [{"pipeline_id": "customer-transactions"}]
+
+    snapshots = load_aws_snapshots(mock_state_store)
+
+    assert "run-aws-1" in snapshots
+    assert snapshots["run-aws-1"]["metadata"]["overall_status"] == "RUNNING"
+    assert snapshots["run-aws-1"]["pipelines"][0]["pipeline_id"] == "customer-transactions"
+    mock_state_store.get_all_pipelines.assert_called_once_with("run-aws-1")

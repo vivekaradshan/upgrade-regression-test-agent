@@ -89,7 +89,7 @@ def test_run_target_aws_posts_signed_request_and_prints_response(capsys, monkeyp
     )
 
     fake_response = {"run_id": "run-abc", "execution_arn": "arn:aws:states:...:execution:x"}
-    with patch.object(cli, "_signed_post", return_value=fake_response) as mock_post:
+    with patch.object(cli, "signed_post", return_value=fake_response) as mock_post:
         args.func(args)
 
     call_args = mock_post.call_args.args

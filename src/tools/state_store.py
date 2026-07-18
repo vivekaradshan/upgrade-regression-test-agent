@@ -136,6 +136,21 @@ class StateStore:
             and not item["record_type"].startswith(EVENT_RECORD_PREFIX)
         ]
 
+    def list_runs(self, limit: int = 20) -> list[dict]:
+        """Enumerates recent runs for the dashboard's AWS-mode run picker
+        (Phase 14.7) - there's no local snapshot directory to list in AWS
+        mode, so this is the only way to discover what run_ids exist at
+        all. A table Scan (not a Query, since record_type is the sort key
+        and run_id isn't known in advance) - acceptable at this project's
+        volume; would need a GSI on created_at if run count grew large."""
+        response = self._table.scan(
+            FilterExpression="record_type = :metadata",
+            ExpressionAttributeValues={":metadata": METADATA_RECORD_TYPE},
+        )
+        items = [_from_dynamo_safe(item) for item in response.get("Items", [])]
+        items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return items[:limit]
+
     def export_snapshot(self, run_id: str, path: str) -> None:
         """Dumps this run's current metadata + pipeline records to a JSON
         file. Needed because the dashboard runs in a separate process from

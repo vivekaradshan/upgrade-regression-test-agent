@@ -2,8 +2,8 @@
 
 ## Status
 
-Phases 14.0–14.5 complete and verified against real AWS. Phases
-14.6–14.9 not started. See the main [README](../README.md) for Steps
+Phases 14.0–14.7 complete and verified against real AWS. Phases
+14.8–14.9 not started. See the main [README](../README.md) for Steps
 1–13 (the local build, complete).
 
 Target: a personal AWS account (`068378433969`, `us-east-1`), single
@@ -40,10 +40,13 @@ These were resolved through explicit tradeoff discussions, not assumed:
   the earlier Fargate + custom-resume-Lambda design entirely — Step
   Functions persists execution state between steps natively, so there's no
   "dispatch → exit → resume from DynamoDB" hand-off to design or debug.
-- **App Runner** (not Fargate+ALB) will host the Streamlit dashboard
-  (Phase 14.7, not yet built) — the one genuinely long-running stateful
-  service in this system, but a single low-traffic internal dashboard
-  needs far less Terraform than Fargate+ALB.
+- **Dashboard stays local-only, not hosted** (revised from the original
+  App Runner plan — see Phase 14.7) — App Runner is closed to new
+  customers as of 2026-04-30, and its recommended replacement (ECS
+  Express Mode) always provisions a mandatory, non-scale-to-zero ALB
+  (~$16-20/month) that alone exceeds the $5/month budget with only one
+  service to run. `dashboard/app.py` gets an AWS-mode data path instead,
+  run locally against real AWS data.
 - **API Gateway HTTP API with IAM auth (SigV4)**, not a REST API or a
   separate API key — reuses the operator's existing AWS credentials
   instead of minting another secret to store/rotate.
@@ -68,7 +71,7 @@ These were resolved through explicit tradeoff discussions, not assumed:
 | GitHub (branches, PRs) | **GitHub** (unchanged) | No AWS equivalent |
 | `.env` (`GITHUB_TOKEN`, `OPENAI_API_KEY`) | **Secrets Manager** | `common.py`'s `get_github_token()`/`get_openai_api_key()`, cached per warm container |
 | Not yet used locally | **CloudWatch + SNS** | Planned Phase 14.6, not built |
-| Not yet used locally | **App Runner** | Planned Phase 14.7, not built |
+| `dashboard/app.py` (local-mode, snapshot files) | `dashboard/app.py` AWS-mode data path (same file, `UPGRADE_AGENT_MODE=aws`) | Run locally against real AWS - not hosted, see Phase 14.7 |
 
 ## Execution model (as built — no dispatch/resume hand-off needed)
 
@@ -200,19 +203,50 @@ on real EMR, report lands in S3, PR opens.
 `status`, and `cleanup`. Verified against real AWS: a signed CLI request
 started a real execution end-to-end successfully.
 
-### ⬜ Phase 14.6 — Observability and cost guardrails
-CloudWatch Log Groups for each Lambda + Step Functions execution logging,
-a CloudWatch Alarm on Step Functions execution failures wired to an SNS
-topic (email notification). (The flat $5/month budget alarm is already
-done, ahead of schedule — this phase is about per-run/failure-rate
-observability, not the billing cap itself.)
+### ✅ Phase 14.6 — Observability and cost guardrails
+CloudWatch Log Groups for all 8 Lambda functions and Step Functions
+execution logging (`level=ALL`, `includeExecutionData`) - full
+state-transition detail in CloudWatch Logs Insights instead of only the
+bounded execution-history API. An SNS topic + email subscription and a
+CloudWatch Alarm on the `AWS/States` `ExecutionsFailed` metric notify on
+any failed execution. Found via a real failed apply: enabling Step
+Functions logging needs a CloudWatch Logs *resource policy* granting
+`states.amazonaws.com` write access to the log group, separate from (and
+in addition to) the IAM role's own `logs:CreateLogDelivery` permissions.
+Verified against real AWS: `logging_configuration` confirmed `level=ALL`
+with the log group correctly attached, alarm correctly wired to the SNS
+topic. (The flat $5/month budget alarm was already done ahead of
+schedule - this phase is about per-run/failure-rate observability, not
+the billing cap itself.)
 
-### ⬜ Phase 14.7 — Dashboard on App Runner
-`dashboard/Dockerfile`. `dashboard/app.py` gets an AWS-mode data path
-(env-var-gated) that queries `StateStore.get_all_pipelines`/
-`get_run_metadata` against real DynamoDB instead of local JSON snapshots —
-the local-mode path stays intact and unchanged. Terraform module for the
-App Runner service.
+### ✅ Phase 14.7 — Dashboard: AWS-mode data path + trigger (local-only, not hosted)
+**Architecture change from the original plan**: App Runner turned out to
+be closed to new customers (AWS stopped accepting new App Runner
+customers as of April 30, 2026); its AWS-recommended replacement, ECS
+Express Mode, was verified (via live AWS docs, not assumed) to always
+provision a mandatory, non-scale-to-zero Application Load Balancer
+(~$16-20/month) — with only one service to run, there's no other service
+to share that ALB cost across, so it alone exceeds the $5/month budget.
+Every "hosted with a public URL" option (App Runner, ECS Express Mode,
+plain Fargate+ALB) was ruled out on this basis; decided to keep the
+dashboard local-only rather than raise the budget for hosting.
+
+What was built instead: `dashboard/app.py` gets a real `UPGRADE_AGENT_MODE`
+env var (default `local`, unchanged behavior). In `aws` mode:
+`load_aws_snapshots()` builds the same `{run_id: {metadata, pipelines}}`
+shape `render()` already expects, from `StateStore.list_runs()` (new -
+a `Scan` filtered to `_metadata` records, since there's no local snapshot
+directory to enumerate run_ids from) and `get_all_pipelines()` against
+real DynamoDB. A new trigger form POSTs the bundled manifest to API
+Gateway via a SigV4-signed request - `cli.py`'s signing logic was
+extracted into `src/tools/signed_http.py` so both the CLI and dashboard
+reuse the identical signing path. Run locally with
+`UPGRADE_AGENT_MODE=aws streamlit run dashboard/app.py` against real AWS
+data - zero additional hosting cost.
+
+Verified against real AWS: the app starts and renders without error
+against real `Settings()`/`StateStore` wiring; `list_runs()` confirmed
+returning real run records from DynamoDB, sorted newest-first.
 
 ### ⬜ Phase 14.8 — CI/CD
 `.github/workflows/terraform-plan.yml` (runs on PRs touching `infra/`,
@@ -225,8 +259,8 @@ Trigger one real run via `--target aws` against the real manifest.
 Confirm: GitHub branches created, EMR jobs ran and produced correct
 Parquet output, the ANSI-mode failure was detected and auto-fixed exactly
 as it is locally, DynamoDB has correct state, the report landed in S3,
-the App Runner dashboard shows it live, a PR was opened, and actual AWS
-cost matches the ~$0.12–0.22/run estimate. Clean up test artifacts
+the local AWS-mode dashboard shows it live, a PR was opened, and actual
+AWS cost matches the ~$0.12–0.22/run estimate. Clean up test artifacts
 (branches, PR) same as the local e2e test does.
 
 ## Verification approach throughout

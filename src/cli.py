@@ -25,15 +25,13 @@ import sys
 from pathlib import Path
 
 import structlog
-from botocore.auth import SigV4Auth
-from botocore.awsrequest import AWSRequest
-from botocore.session import Session as BotocoreSession
 
 from src.config.manifest import ManifestLoader
 from src.config.settings import Settings
 from src.mock_infra.aws_clients import AWSClientFactory
 from src.orchestrator.graph import PROJECT_ROOT, run_upgrade_test
 from src.tools.github_client import GitHubAPIError, GitHubClient
+from src.tools.signed_http import NoCredentialsError, SignedRequestError, signed_post
 from src.tools.state_store import StateStore
 
 STATE_DIR = PROJECT_ROOT / "workspace" / "state"
@@ -52,29 +50,6 @@ def _get_state_store() -> StateStore:
     return StateStore(factory.get_dynamodb_resource())
 
 
-def _signed_post(url: str, body: dict, region: str) -> dict:
-    """Signs the request with the caller's own AWS credentials (SigV4) -
-    the API Gateway route requires AWS_IAM authorization instead of a
-    separate API key, so no secret beyond the operator's existing AWS
-    credentials needs to be issued or stored for this."""
-    import httpx
-
-    session = BotocoreSession()
-    credentials = session.get_credentials()
-    if credentials is None:
-        print("No AWS credentials found (run `aws configure` or set AWS_* env vars)", file=sys.stderr)
-        sys.exit(1)
-
-    request = AWSRequest(method="POST", url=url, data=json.dumps(body), headers={"Content-Type": "application/json"})
-    SigV4Auth(credentials, "execute-api", region).add_auth(request)
-
-    response = httpx.post(url, content=request.body, headers=dict(request.headers))
-    if response.status_code >= 400:
-        print(f"API request failed ({response.status_code}): {response.text}", file=sys.stderr)
-        sys.exit(1)
-    return response.json()
-
-
 def cmd_run(args: argparse.Namespace) -> None:
     if args.target == "aws":
         settings = Settings()
@@ -83,11 +58,15 @@ def cmd_run(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         manifest = ManifestLoader.load_from_file(args.manifest)
-        result = _signed_post(
-            f"{settings.api_endpoint}/runs",
-            {"manifest": manifest.model_dump(mode="json")},
-            settings.aws_region,
-        )
+        try:
+            result = signed_post(
+                f"{settings.api_endpoint}/runs",
+                {"manifest": manifest.model_dump(mode="json")},
+                settings.aws_region,
+            )
+        except (NoCredentialsError, SignedRequestError) as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
         print(json.dumps(result, indent=2))
         return
 

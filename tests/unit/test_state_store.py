@@ -62,6 +62,28 @@ def test_get_all_pipelines_excludes_metadata_record(state_store, manifest):
     assert all(p["record_type"] != "_metadata" for p in pipelines)
 
 
+def test_list_runs_returns_only_metadata_records_newest_first(state_store, manifest):
+    state_store.init_run("run-old", manifest)
+    state_store.update_run_status("run-old", created_at="2026-01-01T00:00:00+00:00")
+    state_store.init_run("run-new", manifest)
+    state_store.update_run_status("run-new", created_at="2026-06-01T00:00:00+00:00")
+
+    runs = state_store.list_runs()
+
+    run_ids = [r["run_id"] for r in runs]
+    assert run_ids.index("run-new") < run_ids.index("run-old")
+    assert all(r["record_type"] == "_metadata" for r in runs)
+
+
+def test_list_runs_respects_limit(state_store, manifest):
+    for i in range(5):
+        state_store.init_run(f"run-{i}", manifest)
+
+    runs = state_store.list_runs(limit=2)
+
+    assert len(runs) == 2
+
+
 def test_concurrent_updates_do_not_lose_data(state_store, manifest):
     state_store.init_run("run-4", manifest)
 
