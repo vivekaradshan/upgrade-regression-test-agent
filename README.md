@@ -145,18 +145,13 @@ The rest were deliberately deferred rather than expanding scope mid-build:
 - **Fleet mode** — `TestManifest.pipeline` is a single object today; testing
   many pipelines in one run would mean a manifest schema redesign plus
   LangGraph `Send`-based fan-out and an aggregate report.
-- **Human-in-the-loop approval for LLM-diagnosed fixes** — the LLM fallback
-  always escalates today rather than auto-applying, since its
-  `fix_suggestion` is free text, not a structured `{key, value}` pair. A
-  structured, Pydantic-validated LLM output plus a LangGraph `interrupt`
-  node would let a human approve an LLM-proposed fix instead of it always
-  requiring a fully manual resolution.
+- **Human-in-the-loop approval for LLM-diagnosed fixes**, **structured LLM
+  fix output**, and **self-improving pattern library** — expanded into a
+  full phased plan in [`docs/agentic-llm-plan.md`](docs/agentic-llm-plan.md)
+  (Step 15, not started, depends on Step 14 completing first).
 - **Static pre-flight scanning** — AST/SQL-lineage scanning of pipeline code
   for known-breaking API usage before running anything, to triage which
   pipelines even need a full run.
-- **Self-improving pattern library** — capture human-resolved escalations
-  back into `known_failure_patterns` so the same failure auto-fixes next
-  time.
 - **Generalizing beyond Spark version bumps** — Delta upgrades, Python
   version bumps, EMR release migrations; the orchestrator graph barely
   changes, only the manifest's patterns/modifications would.
@@ -164,7 +159,8 @@ The rest were deliberately deferred rather than expanding scope mid-build:
   `spark_version`.
 - **Mitigation vs. remediation labeling** — flag in the PR body when an
   applied fix defers the real migration (e.g. disabling ANSI mode) rather
-  than actually fixing the pipeline for the new Spark version.
+  than actually fixing the pipeline for the new Spark version. Also covered
+  by [`docs/agentic-llm-plan.md`](docs/agentic-llm-plan.md).
 
 ## Status
 
