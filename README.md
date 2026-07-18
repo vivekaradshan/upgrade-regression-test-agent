@@ -171,6 +171,11 @@ The rest were deliberately deferred rather than expanding scope mid-build:
 Steps 1-13 of the local build are complete and verified end-to-end via the
 real CLI against real GitHub — see [`docs/sample-report/`](docs/sample-report)
 for a real report and the orchestrator graph above for the full flow. Step
-14 (swapping local mocks for real AWS infrastructure) is planned in
-[`docs/aws-deployment-plan.md`](docs/aws-deployment-plan.md) but not yet
-started.
+14 (swapping local mocks for real AWS infrastructure) is in progress —
+phases 14.0-14.5 (Terraform bootstrap, DynamoDB/S3/Secrets Manager, EMR
+Serverless, Lambda handlers, Step Functions orchestrator, API Gateway
+trigger) are complete and verified against real AWS; phases 14.6-14.9
+(observability, dashboard on App Runner, CI/CD, final end-to-end
+validation) are not yet started. See
+[`docs/aws-deployment-plan.md`](docs/aws-deployment-plan.md) for the full
+phase-by-phase plan and architecture.

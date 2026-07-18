@@ -2,140 +2,237 @@
 
 ## Status
 
-Not started. Steps 1-13 are complete and entirely local (see the main
-[README](../README.md)); this document plans the eventual swap from local
-mocks to real AWS infrastructure. Nothing described here has been built yet.
+Phases 14.0–14.5 complete and verified against real AWS. Phases
+14.6–14.9 not started. See the main [README](../README.md) for Steps
+1–13 (the local build, complete).
 
-## Scope of this document
-
-Architecture and resource mapping only — no Terraform/CDK/CloudFormation code
-yet. Target: a personal AWS sandbox account, single region (`us-east-1`
-assumed; nothing here is region-specific). This is the design to implement
-*when* Step 14 starts, not a description of current state.
+Target: a personal AWS account (`068378433969`, `us-east-1`), single
+environment — production-quality practices (least-privilege IAM,
+Secrets Manager, Terraform-managed infra, monitoring, cost guardrails)
+but not a multi-account/multi-env enterprise setup.
 
 ## Guiding principle
 
-Every local component in `src/mock_infra/` was written specifically so that
-swapping it for a real AWS client is a substitution, not a rewrite. The
-orchestrator nodes (`src/orchestrator/nodes/*.py`) call an interface
-(`LocalSparkRunner.run_spark_job`, `MockStepFunctions.start_execution`,
-`AWSClientFactory.get_*_client`) — as long as the real AWS adapters honor the
-same method signatures, `src/orchestrator/graph.py` and every node built in
-Steps 8-11 should need zero changes.
+Every local component in `src/mock_infra/` and `src/orchestrator/nodes/*.py`
+was written so that swapping to real AWS is mostly a substitution, not a
+rewrite. Concretely: `src/aws_lambda/*.py` handlers are thin wrappers that
+build the same dependency objects the local nodes expect (`GitHubClient`,
+`StateStore`, `LLMAnalyzer`) and call the *existing, unmodified* node
+function — the only new code is the Lambda/Step-Functions wiring.
 
-## Component mapping
+## Architecture decisions
 
-| Local (Steps 1-13) | AWS resource | Purpose |
+These were resolved through explicit tradeoff discussions, not assumed:
+
+- **EMR Serverless** (not EC2) runs the actual PySpark jobs — matches the
+  short/bursty per-run profile, no cluster lifecycle to manage. Two
+  applications (`baseline`, `target`) since release label is fixed per
+  application and Spark 3.5 vs 4.0 need different release labels
+  (`emr-7.13.0` vs `emr-spark-8.0.0`).
+- **Terraform** for all infrastructure-as-code.
+- **Step Functions + Lambda as the orchestrator — not Fargate.** Each
+  lightweight LangGraph node becomes a thin Lambda handler wrapping the
+  existing node function; `execute_jobs`/`validate_data` use Step
+  Functions' native `emr-serverless:startJobRun.sync` integration (blocks
+  natively, no custom polling/resume code). The retry/validate/escalate
+  branching is a Step Functions `Choice` state mirroring
+  `_route_after_analysis` in `src/orchestrator/graph.py`. This eliminates
+  the earlier Fargate + custom-resume-Lambda design entirely — Step
+  Functions persists execution state between steps natively, so there's no
+  "dispatch → exit → resume from DynamoDB" hand-off to design or debug.
+- **App Runner** (not Fargate+ALB) will host the Streamlit dashboard
+  (Phase 14.7, not yet built) — the one genuinely long-running stateful
+  service in this system, but a single low-traffic internal dashboard
+  needs far less Terraform than Fargate+ALB.
+- **API Gateway HTTP API with IAM auth (SigV4)**, not a REST API or a
+  separate API key — reuses the operator's existing AWS credentials
+  instead of minting another secret to store/rotate.
+- **Fleet mode and human-in-the-loop chat approval remain deferred future
+  enhancements** — not built, but this architecture is forward-compatible
+  with both (Step Functions Distributed Map for fleet fan-out, the native
+  `waitForTaskToken` callback pattern for chat-based approval) without a
+  redesign later.
+
+## Component mapping (as built)
+
+| Local (Steps 1–13) | AWS resource | Notes |
 |---|---|---|
-| `src/mock_infra/mock_emr.py` (`LocalSparkRunner`, subprocess) | **EMR Serverless** application | Runs the actual PySpark job (baseline, target, and validation - see below) |
-| `src/mock_infra/mock_step_functions.py` (threading) | **Step Functions** state machine | Orchestrates job dispatch and completion signaling |
-| `src/mock_infra/mock_event_bridge.py` (in-process callback) | **EventBridge** rule + target | Fires when a Step Functions execution completes, triggers the next orchestrator step |
-| `src/tools/state_store.py` (moto-mocked) | **DynamoDB** table `upgrade-test-runs` | Same schema as today (`run_id` partition key, `record_type` sort key) - no schema change needed, only the client swaps |
-| `workspace/state/<run_id>.json` (local file, Step 12) | **DynamoDB** directly, or a small **S3**-backed snapshot | The dashboard reads live state directly from DynamoDB instead of a local file once both dashboard and orchestrator can reach the same real table |
-| `workspace/runs/<run_id>/` (local git checkouts) | **S3** bucket, prefix per run | EMR Serverless jobs read code/data from S3, not a local filesystem - the local-clone step in `execute_node.py` is replaced by "clone locally, sync to S3" or a build step that packages the branch and uploads it |
-| `reports/<run_id>/` (local HTML/JSON) | **S3** bucket (public-read prefix or presigned URLs) | Report hosting; the PR body links to the S3 URL instead of a local path |
-| Python process running `run_upgrade_test()` (Steps 8-11) | **Fargate** ECS task | The orchestrator itself - triggered instead of run via CLI, dispatches to Step Functions and exits, resumes via EventBridge (see "Execution model change" below) |
-| `python -m src.cli run ...` (Step 13, planned) | **API Gateway** → Lambda or direct Fargate task launch | External trigger replacing manual CLI invocation |
-| GitHub (branches, PRs) | **GitHub** (unchanged) | No AWS equivalent - stays exactly as built in Step 4 |
-| `.env` (`GITHUB_TOKEN`, `OPENAI_API_KEY`) | **Secrets Manager** | Orchestrator reads secrets from Secrets Manager instead of a local `.env` file; `src/config/settings.py` gets an AWS-backed variant |
-| Not yet used locally | **SNS** topic | Run-completion notifications (success/failure alert) - mentioned in the original build plan's mock infra scope but never wired to a node; would be added in `report_node.py` or `pr_node.py` at Step 14 time |
+| `src/mock_infra/mock_emr.py` (`LocalSparkRunner`, subprocess) | **EMR Serverless** (2 applications: baseline, target) | `infra/terraform/environments/prod/main.tf` |
+| `src/orchestrator/graph.py` (LangGraph) | **Step Functions** state machine | `infra/terraform/environments/prod/state_machine.json.tpl` / `.tf` |
+| `src/orchestrator/nodes/*.py` (called directly) | **Lambda** (7 functions, one shared layer) | `src/aws_lambda/*_handler.py`, `infra/terraform/environments/prod/lambda.tf` |
+| `src/tools/state_store.py` (moto-mocked) | **DynamoDB** table `upgrade-test-runs` | Same schema, zero code changes — only `AWSClientFactory(use_mocks=False)` |
+| `workspace/state/<run_id>.json` (local snapshot file) | **DynamoDB** directly, via `cli.py --target aws` | `StateStore.get_run_metadata`/`get_all_pipelines` |
+| `workspace/runs/<run_id>/` (local git checkouts) | **S3** artifacts bucket, prefix per run | `prepare_execution_handler.py` fetches just the entry script via GitHub Contents API, uploads to S3 — no local clone at all |
+| `reports/<run_id>/` (local HTML/JSON) | **S3** reports bucket | `generate_report_handler.py` |
+| `python -m src.cli run ...` (local, blocking) | **API Gateway** → `start_run` Lambda → `states:StartExecution` | `src/aws_lambda/start_run_handler.py`, `infra/terraform/environments/prod/api_gateway.tf` |
+| GitHub (branches, PRs) | **GitHub** (unchanged) | No AWS equivalent |
+| `.env` (`GITHUB_TOKEN`, `OPENAI_API_KEY`) | **Secrets Manager** | `common.py`'s `get_github_token()`/`get_openai_api_key()`, cached per warm container |
+| Not yet used locally | **CloudWatch + SNS** | Planned Phase 14.6, not built |
+| Not yet used locally | **App Runner** | Planned Phase 14.7, not built |
 
-## Execution model change (the one real architectural shift)
+## Execution model (as built — no dispatch/resume hand-off needed)
 
-Locally, `run_upgrade_test()` is a single long-lived Python process that
-blocks on `graph.stream(...)`, waiting synchronously for each Spark job to
-finish before moving to the next node (see `execute_node.py`'s
-`_wait_for_completion` polling loop).
+Unlike the original Fargate-based draft of this plan, Step Functions
+persists state between steps natively, so there is no custom "resume from
+DynamoDB" logic:
 
-On AWS, this changes to a **dispatch → exit → resume** pattern:
+1. `start_run` Lambda validates the manifest, calls `state_store.init_run()`
+   (so the run has a queryable DynamoDB record from the start), and calls
+   `states:StartExecution` with the initial state as input.
+2. `CreateBranches` → `MockBuild` (Lambda Tasks).
+3. `ExecuteBoth` (`Parallel` state): baseline and target EMR jobs run
+   concurrently via `emr-serverless:startJobRun.sync`, which blocks the
+   state machine natively until each job reaches a terminal state.
+4. `AnalyzeLogs` (Lambda) diagnoses a target failure via pattern matching
+   first, LLM fallback second (see `src/orchestrator/nodes/analyze_node.py`
+   — unchanged). An auto-fixable diagnosis commits a config change to the
+   target branch and loops back to `CheckRetry` → re-runs *only* the
+   target job (`RunTargetEMROnly`), up to `manifest.log_analysis.retry.max_retries`.
+5. On target success: `RunValidateEMR` (a third EMR job, running
+   `infra/spark_drivers/validate_job.py`, which imports
+   `src.tools.data_validator.DataValidator` unchanged) → `ReadValidationResults`
+   Lambda (the native `.sync` task only reports job success/failure, not
+   `results.json` content, so a small Lambda reads it from S3).
+6. `GenerateReport` → `RaisePR` (Lambda Tasks) → execution ends.
 
-1. Fargate task starts, runs `create_branches` and `mock_build` (fast, no
-   waiting), then calls `step_functions.start_execution` for the baseline
-   and target EMR jobs and **exits** rather than polling.
-2. Step Functions runs the actual EMR Serverless job.
-3. On completion, Step Functions emits a **EventBridge** event.
-4. An EventBridge rule triggers a **new** Fargate task (or a Lambda that
-   resumes the Fargate task), which picks up from `analyze_logs` using the
-   run's state already persisted in DynamoDB - not from in-memory Python
-   state, since the process that started the run may no longer exist.
+## IAM roles (as built)
 
-This means `execute_node.py` and `analyze_node.py` need a real state-machine
-definition (steps, not just Python function calls) that maps to this
-dispatch/resume boundary, and the orchestrator needs a way to be re-invoked
-"resume from DynamoDB state" rather than always starting fresh at
-`create_branches`. This is the main design gap not yet solved locally and
-worth prototyping first when Step 14 starts.
+Every Lambda function gets its own individually-scoped role rather than one
+shared broad role (e.g. `prepare_execution` has zero DynamoDB access,
+confirmed by reading its code before granting anything) — see
+`infra/terraform/environments/prod/lambda.tf`:
 
-## Validation also becomes its own EMR job
-
-Per an earlier design note from this project: validation should not run
-in-process inside the orchestrator (as `validate_node.py` currently does,
-spinning up a local `SparkSession` directly). On AWS, `validate_data`
-dispatches a **third** EMR Serverless job (alongside baseline and target),
-passing the run_id and both output S3 paths as job parameters, and waits for
-its own Step Functions execution/EventBridge completion signal exactly like
-the baseline/target jobs. `src/tools/data_validator.py`'s actual comparison
-logic doesn't change - only how it's invoked (dispatched job vs. in-process
-call).
-
-## IAM roles needed
-
-- **Fargate task role**: DynamoDB read/write on `upgrade-test-runs`, S3
-  read/write on the run-artifacts bucket, Step Functions `StartExecution`,
-  Secrets Manager read for GitHub/OpenAI credentials, SNS `Publish`.
-- **EMR Serverless execution role**: S3 read (input code/data) + write
-  (output Parquet, logs).
-- **Step Functions execution role**: `emr-serverless:StartJobRun`,
-  `emr-serverless:GetJobRun`, EventBridge `PutEvents`.
-- **EventBridge rule role**: permission to invoke the Fargate task
-  (via ECS `RunTask`) or a resume Lambda.
+- **Per-Lambda roles**: CloudWatch Logs (all), Secrets Manager read (only
+  the functions that need GitHub/OpenAI credentials), DynamoDB read/write
+  on `upgrade-test-runs` (only the functions that call `StateStore`).
+- **`start_run` role**: DynamoDB `PutItem`, `states:StartExecution` scoped
+  to the one state machine ARN.
+- **`emr_serverless_execution` role**: S3 read/write on the artifacts and
+  reports buckets, CloudWatch Logs only.
+- **`step_functions_execution` role**: Lambda `InvokeFunction` on the 7
+  function ARNs, `emr-serverless:StartJobRun`/`GetJobRun`/`CancelJobRun`/
+  `TagResource` scoped to the two EMR applications, `iam:PassRole` scoped
+  to the EMR execution role, EventBridge managed-rule permissions
+  (required by the native `.sync` integration).
+- **GitHub Actions OIDC role** (Phase 14.0, not yet consumed by CI/CD):
+  trusted by `repo:vivekaradshan/upgrade-regression-test-agent:*`, no
+  long-lived AWS keys stored in GitHub.
 
 ## Networking
 
-EMR Serverless doesn't require a VPC unless the job needs private network
-access (it doesn't here - S3 and DynamoDB are reachable via AWS's public
-endpoints or VPC gateway endpoints). Fargate task can run in a default VPC's
-public subnets with a security group allowing outbound HTTPS only (GitHub
-API, OpenAI API, AWS APIs) - no inbound rules needed since nothing calls the
-Fargate task directly; API Gateway invokes it via the ECS API, not a network
-path into the task.
+No VPC required. EMR Serverless, DynamoDB, S3, and Secrets Manager are all
+reachable via AWS's public endpoints; Lambda functions run outside a VPC
+(no need for one, since nothing here requires private network access) and
+reach the GitHub/OpenAI APIs over the public internet.
 
 ## Cost estimate (per run)
 
-Building on the original plan's estimate, adjusted for what Steps 1-13
-actually run (baseline + target + **validation** = 3 Spark jobs per run, not
-2):
+3 Spark jobs per run (baseline + target + validation), all short EMR
+Serverless jobs:
 
 | Resource | Estimate |
 |---|---|
-| EMR Serverless (3 short jobs, ~2-5 min each) | ~$0.10-0.20 |
-| Fargate (2 short-lived tasks: dispatch + resume) | ~$0.02 |
-| Step Functions (3 state machine executions) | ~$0.001 |
+| EMR Serverless (3 short jobs, ~2–5 min each) | ~$0.10–0.20 |
+| Lambda (7 functions, short invocations) | ~$0.001 |
+| Step Functions (1 execution, ~10–15 state transitions incl. retries) | ~$0.001 |
 | DynamoDB (on-demand, low volume) | free tier |
 | S3 (small artifacts, short retention) | ~$0.01 |
-| SNS | free tier |
-| EventBridge | free tier |
-| **Total** | **~$0.15-0.25 per run** |
+| API Gateway (1 request per run) | free tier |
+| **Total** | **~$0.12–0.22 per run** |
+
+A flat **$5/month** AWS Budget guardrail (`aws_budgets_budget.monthly_cost_guardrail`
+in `main.tf`) alerts at 80%/100%/forecasted regardless of per-run cost —
+already built, ahead of Phase 14.6.
 
 ## What doesn't change
 
-- `src/config/manifest.py` — manifest schema stays identical.
-- `src/tools/github_client.py` — GitHub remains the only real dependency
-  locally and stays exactly as-is.
+- `src/config/manifest.py` — schema unchanged.
+- `src/tools/github_client.py` — GitHub remains the only non-AWS
+  dependency, unchanged.
 - `src/analysis/*.py` — pattern matching, LLM fallback, corrective action
-  logic are all pure functions independent of where they run.
-- `src/tools/data_validator.py` — the comparison logic itself, only its
-  invocation context changes (see above).
-- `src/reporting/report_generator.py` — same HTML/JSON generation; only the
-  write target changes (S3 instead of local disk).
+  logic are pure functions, run identically inside a Lambda handler.
+- `src/tools/data_validator.py` — comparison logic unchanged; only how
+  it's invoked changes (EMR job instead of in-process SparkSession).
+- `src/tools/state_store.py` — zero code changes, only the boto3 client
+  swaps from moto-mocked to real.
+- `src/reporting/report_generator.py` — same HTML/JSON generation; only
+  the write target changes (S3 instead of local disk).
 
-## Open questions to resolve before implementation starts
+## Phases
 
-1. EMR Serverless vs. EMR on EC2 (Serverless is simpler and matches the
-   short/bursty job profile; EC2 gives more control if a real customer
-   pipeline needs it later).
-2. How "resume from DynamoDB state" actually gets implemented — a resume
-   Lambda that re-invokes a fresh Fargate task with `run_id` as input, most
-   likely, but the exact hand-off contract isn't designed yet.
-3. Terraform vs. CDK vs. CloudFormation for the actual IaC, deferred per
-   this document's scope.
+### ✅ Phase 14.0 — Terraform bootstrap
+S3 bucket + DynamoDB lock table for Terraform remote state, GitHub Actions
+OIDC identity provider + deploy role. `infra/terraform/bootstrap/`.
+
+### ✅ Phase 14.1 — Data and secrets layer
+DynamoDB table `upgrade-test-runs`, S3 buckets (artifacts, reports),
+Secrets Manager entries for `GITHUB_TOKEN`/`OPENAI_API_KEY`, the $5/month
+budget guardrail.
+
+### ✅ Phase 14.2 — EMR Serverless
+Two EMR Serverless applications (baseline on `emr-7.13.0`, target on
+`emr-spark-8.0.0`) + execution role. Verified via a real smoke-test job
+run: baseline succeeded and produced real Parquet, target failed with a
+genuine `SparkArithmeticException`/`DIVIDE_BY_ZERO` on real Spark 4.0.2.
+
+### ✅ Phase 14.3 — Lambda handlers
+`src/aws_lambda/` package: one thin handler per node, a shared Lambda
+Layer (all `src/` code, built via `infra/scripts/build_lambda_layer.sh`
+using `pip --platform manylinux2014_x86_64` to cross-package genuine Linux
+wheels from a Mac, no Docker needed).
+
+### ✅ Phase 14.4 — Step Functions state machine
+`infra/terraform/environments/prod/state_machine.json.tpl`/`.tf`. Verified
+against real AWS through 4 iterations, each fixing a bug found by an
+actual failed execution (not just `terraform apply` succeeding) — see the
+file's inline comments for details (EMR Serverless rejecting
+`spark.master`, EMR's `SUCCESS`/`State`/`JobRunId` output shape vs. the
+local mock's `SUCCEEDED` vocabulary, and the `.sync` Catch block silently
+discarding `jobRunId` on a genuine Spark job failure). The 4th execution
+completed the full path for real: baseline succeeds, target fails with a
+real ANSI division-by-zero exception, pattern matcher diagnoses it,
+auto-fix commits to the target branch, retry succeeds, validation passes
+on real EMR, report lands in S3, PR opens.
+
+### ✅ Phase 14.5 — API Gateway trigger
+`POST /runs` (HTTP API, IAM/SigV4 auth) → `start_run` Lambda →
+`states:StartExecution`. `cli.py` gets `--target {local,aws}` on `run`,
+`status`, and `cleanup`. Verified against real AWS: a signed CLI request
+started a real execution end-to-end successfully.
+
+### ⬜ Phase 14.6 — Observability and cost guardrails
+CloudWatch Log Groups for each Lambda + Step Functions execution logging,
+a CloudWatch Alarm on Step Functions execution failures wired to an SNS
+topic (email notification). (The flat $5/month budget alarm is already
+done, ahead of schedule — this phase is about per-run/failure-rate
+observability, not the billing cap itself.)
+
+### ⬜ Phase 14.7 — Dashboard on App Runner
+`dashboard/Dockerfile`. `dashboard/app.py` gets an AWS-mode data path
+(env-var-gated) that queries `StateStore.get_all_pipelines`/
+`get_run_metadata` against real DynamoDB instead of local JSON snapshots —
+the local-mode path stays intact and unchanged. Terraform module for the
+App Runner service.
+
+### ⬜ Phase 14.8 — CI/CD
+`.github/workflows/terraform-plan.yml` (runs on PRs touching `infra/`,
+posts the plan as a PR comment) and `terraform-apply.yml` (runs on merge
+to `main`, using the OIDC role from Phase 14.0 — no stored AWS credentials
+in GitHub Actions).
+
+### ⬜ Phase 14.9 — End-to-end validation
+Trigger one real run via `--target aws` against the real manifest.
+Confirm: GitHub branches created, EMR jobs ran and produced correct
+Parquet output, the ANSI-mode failure was detected and auto-fixed exactly
+as it is locally, DynamoDB has correct state, the report landed in S3,
+the App Runner dashboard shows it live, a PR was opened, and actual AWS
+cost matches the ~$0.12–0.22/run estimate. Clean up test artifacts
+(branches, PR) same as the local e2e test does.
+
+## Verification approach throughout
+
+Every phase is verified against real AWS state before being considered
+done — not just `terraform plan`/`apply` succeeding. Phase 14.4 in
+particular required 4 real Step Functions executions, each surfacing a
+genuine bug that unit tests (mocked) couldn't have caught, since they
+depend on the exact shape of real AWS service responses.
