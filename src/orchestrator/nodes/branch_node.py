@@ -43,7 +43,14 @@ def make_create_branches_node(github_client: GitHubClient, state_store: StateSto
             baseline_branch=baseline_branch,
             target_branch=target_branch,
         )
-        state_store.update_run_status(run_id, phase="BUILD")
+        # Also persisted on the queryable _metadata record, not just the
+        # append-only event log - the dashboard (local or AWS-mode) reads
+        # get_run_metadata()/get_all_pipelines(), not get_events(), so
+        # without this the branch names were only ever discoverable by
+        # scanning the audit log.
+        state_store.update_run_status(
+            run_id, phase="BUILD", baseline_branch=baseline_branch, target_branch=target_branch
+        )
 
         return {
             "baseline_branch": baseline_branch,

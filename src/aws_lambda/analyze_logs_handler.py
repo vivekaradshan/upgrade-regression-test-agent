@@ -64,10 +64,38 @@ def _recover_job_run_id(target_execution: dict) -> dict:
     return {**target_execution, "status": status, "jobRunId": job_run_id}
 
 
+def _translate_status(emr_status: str) -> str:
+    """EMR Serverless reports "SUCCESS"/"FAILED" - the dashboard's status
+    badges (dashboard/app.py's STATUS_ICONS) expect the local mock's
+    "SUCCEEDED"/"FAILED" vocabulary, same translation
+    prepare_execution_handler.py/this module already do for
+    target_execution before handing it to the shared analyze_node."""
+    return "SUCCEEDED" if emr_status == "SUCCESS" else emr_status
+
+
 def handler(event: dict, context) -> dict:
     manifest = event["manifest"]
     run_id = event["run_id"]
     target_execution = _recover_job_run_id(event["target_execution"])
+
+    # Neither this handler nor any other AWS Lambda wrote the *final*
+    # baseline_status/target_status once a job actually finished -
+    # prepare_execution_handler.py marks it "RUNNING" when the job starts,
+    # but without this, the dashboard would show RUNNING forever after
+    # that, even once the job (and possibly the whole run) completed. This
+    # runs unconditionally, before either branch below, so it applies on
+    # both the escalation path and the ordinary analysis path, and on
+    # every retry (event["baseline_execution"] is only present on the
+    # first pass - already-SUCCEEDED status doesn't need rewriting on
+    # retry-only passes where only the target job reran).
+    state_store = get_state_store()
+    pipeline_status_update = {}
+    if event.get("baseline_execution", {}).get("status"):
+        pipeline_status_update["baseline_status"] = _translate_status(event["baseline_execution"]["status"])
+    if target_execution.get("status"):
+        pipeline_status_update["target_status"] = _translate_status(target_execution["status"])
+    if pipeline_status_update:
+        state_store.update_pipeline_status(run_id, manifest["pipeline"]["id"], **pipeline_status_update)
 
     # target_execution can still be {"status": "FAILED"} with no jobRunId at
     # all after recovery - the EMR *task itself* failing before a job run
@@ -79,7 +107,6 @@ def handler(event: dict, context) -> dict:
     # analyze_node.py's own escalation path returns, rather than forcing
     # this through log analysis that has nothing to read.
     if target_execution.get("status") != "SUCCESS" and "jobRunId" not in target_execution:
-        state_store = get_state_store()
         diagnosis = "Target EMR job never started (Step Functions task failure, not a Spark job failure)"
         analysis_result = {
             "source": "infrastructure",
@@ -98,7 +125,6 @@ def handler(event: dict, context) -> dict:
         )
 
     github_client = get_github_client(manifest)
-    state_store = get_state_store()
     llm_analyzer = get_llm_analyzer(manifest)
 
     # analyze_node.py (shared, unmodified) checks target_execution["status"]

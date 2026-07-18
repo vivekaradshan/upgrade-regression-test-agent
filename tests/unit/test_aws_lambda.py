@@ -149,9 +149,11 @@ class TestPrepareExecutionHandler:
             ("print('hi')", "entry-script-sha"),  # spark_job.py content
             ("spark_config: {}\n", "config-sha"),  # config.yaml content
         ]
+        mock_state_store = MagicMock()
 
         with (
             patch.object(peh, "get_github_client", return_value=mock_github_client),
+            patch.object(peh, "get_state_store", return_value=mock_state_store),
             patch.object(peh, "s3") as mock_s3,
         ):
             result = peh.handler(event, context=None)
@@ -160,6 +162,35 @@ class TestPrepareExecutionHandler:
         assert "s3://test-artifacts-bucket/run-1/baseline/spark_job.py" == result["emr_job"]["entryPoint"]
         mock_s3.put_object.assert_called_once()
         mock_github_client.close.assert_called_once()
+
+    def test_handler_marks_baseline_status_running_before_dispatching_job(self, manifest_dict):
+        from src.aws_lambda import prepare_execution_handler as peh
+
+        event = {
+            "run_id": "run-1",
+            "manifest": manifest_dict,
+            "baseline_branch": "baseline-branch",
+            "target_branch": "target-branch",
+            "variant": "target",
+        }
+
+        mock_github_client = MagicMock()
+        mock_github_client.get_file_content.side_effect = [
+            ("print('hi')", "entry-script-sha"),
+            ("spark_config: {}\n", "config-sha"),
+        ]
+        mock_state_store = MagicMock()
+
+        with (
+            patch.object(peh, "get_github_client", return_value=mock_github_client),
+            patch.object(peh, "get_state_store", return_value=mock_state_store),
+            patch.object(peh, "s3"),
+        ):
+            peh.handler(event, context=None)
+
+        mock_state_store.update_pipeline_status.assert_called_once_with(
+            "run-1", "customer-transactions", target_status="RUNNING"
+        )
 
     def test_handler_prepares_validate_job(self, manifest_dict):
         from src.aws_lambda import prepare_execution_handler as peh
@@ -209,6 +240,35 @@ class TestAnalyzeLogsHandler:
         mock_s3.download_file.assert_not_called()
         assert result["phase"] == "VALIDATE"
 
+    def test_syncs_baseline_and_target_status_for_dashboard(self, manifest_dict):
+        from src.aws_lambda import analyze_logs_handler as alh
+
+        # Neither prepare_execution_handler nor any other AWS Lambda wrote
+        # the *final* baseline_status/target_status once a job finished -
+        # this is the fix, and it must run regardless of which analysis
+        # branch is taken below (target succeeded here).
+        event = {
+            "run_id": "run-1",
+            "manifest": manifest_dict,
+            "target_branch": "target-branch",
+            "baseline_execution": {"status": "SUCCESS", "jobRunId": "b-1"},
+            "target_execution": {"status": "SUCCESS", "jobRunId": "t-1"},
+            "retry_count": 0,
+        }
+        mock_state_store = MagicMock()
+
+        with (
+            patch.object(alh, "get_github_client", return_value=MagicMock()),
+            patch.object(alh, "get_state_store", return_value=mock_state_store),
+            patch.object(alh, "get_llm_analyzer", return_value=MagicMock()),
+            patch.object(alh, "s3"),
+        ):
+            alh.handler(event, context=None)
+
+        mock_state_store.update_pipeline_status.assert_any_call(
+            "run-1", "customer-transactions", baseline_status="SUCCEEDED", target_status="SUCCEEDED"
+        )
+
     def test_escalates_when_emr_task_itself_failed_with_no_job_run_id(self, manifest_dict):
         from src.aws_lambda import analyze_logs_handler as alh
 
@@ -234,7 +294,13 @@ class TestAnalyzeLogsHandler:
         assert result["phase"] == "REPORT"
         assert result["status"] == "FAILED"
         assert result["analysis_result"]["source"] == "infrastructure"
-        mock_state_store.update_pipeline_status.assert_called_once()
+        # Called twice: once to sync target_status="FAILED" for the
+        # dashboard (this handler's own status-sync fix), once for the
+        # escalation's diagnosis/error_message fields.
+        assert mock_state_store.update_pipeline_status.call_count == 2
+        mock_state_store.update_pipeline_status.assert_any_call(
+            "run-1", "customer-transactions", target_status="FAILED"
+        )
 
     def test_recovers_job_run_id_from_catch_cause_when_job_actually_ran(self, manifest_dict):
         from src.aws_lambda import analyze_logs_handler as alh

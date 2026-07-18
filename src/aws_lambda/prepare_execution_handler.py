@@ -29,7 +29,7 @@ import os
 import boto3
 import yaml
 
-from src.aws_lambda.common import get_github_client, merge_update
+from src.aws_lambda.common import get_github_client, get_state_store, merge_update
 from src.config.manifest import TestManifest
 
 s3 = boto3.client("s3")
@@ -55,6 +55,16 @@ def handler(event: dict, context) -> dict:
         if variant == "validate":
             emr_job = _prepare_validate_job(event, manifest, run_id)
         else:
+            # execute_node.py (the local-only node) only writes
+            # baseline_status/target_status once a job *finishes* - nothing
+            # on the AWS path marked it "RUNNING" while the native EMR
+            # .sync task blocks, so the dashboard showed PENDING for the
+            # job's entire actual runtime. This runs right before that
+            # .sync task starts, so it's the right place to fix that.
+            state_store = get_state_store()
+            state_store.update_pipeline_status(
+                run_id, manifest.pipeline.id, **{f"{variant}_status": "RUNNING"}
+            )
             emr_job = _prepare_pipeline_job(event, manifest, run_id, variant, github_client)
     finally:
         github_client.close()

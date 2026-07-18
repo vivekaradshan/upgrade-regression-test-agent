@@ -156,8 +156,11 @@ resource "aws_lambda_function" "mock_build" {
 }
 
 # ---- prepare_execution ----
-# No StateStore/DynamoDB access needed - this handler only fetches GitHub
-# content and writes EMR job inputs to S3, confirmed by reading its code.
+# Phase 14.7's dashboard status-sync fix added one DynamoDB write here
+# (marking baseline_status/target_status "RUNNING" before dispatching the
+# EMR job, so the dashboard doesn't show PENDING for the job's entire
+# actual runtime) - previously this handler only fetched GitHub content
+# and wrote EMR job inputs to S3, confirmed by reading its code.
 
 resource "aws_iam_role" "prepare_execution" {
   name               = "${var.project_name}-prepare-execution"
@@ -177,6 +180,12 @@ data "aws_iam_policy_document" "prepare_execution_permissions" {
     effect    = "Allow"
     actions   = ["s3:PutObject", "s3:GetObject", "s3:HeadObject"]
     resources = ["${aws_s3_bucket.artifacts.arn}/*"]
+  }
+  statement {
+    sid       = "StateStore"
+    effect    = "Allow"
+    actions   = ["dynamodb:UpdateItem"]
+    resources = [aws_dynamodb_table.runs.arn]
   }
 }
 

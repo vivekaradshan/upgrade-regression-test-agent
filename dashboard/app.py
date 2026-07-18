@@ -85,6 +85,20 @@ def load_aws_snapshots(state_store: StateStore) -> dict[str, dict]:
     return snapshots
 
 
+def _fetch_s3_text(s3_uri: str) -> str | None:
+    """Reads report.html's content from S3 for inline rendering - the
+    AWS-mode equivalent of local mode's plain `open(report_path)`, since
+    report_path is an s3:// URI there instead of a local filesystem path."""
+    import boto3
+
+    bucket, key = s3_uri.replace("s3://", "", 1).split("/", 1)
+    try:
+        response = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+        return response["Body"].read().decode("utf-8")
+    except Exception:
+        return None
+
+
 def format_duration(created_at: str, updated_at: str) -> str:
     if not created_at or not updated_at:
         return "-"
@@ -130,21 +144,37 @@ def render(run_id: str, snapshot: dict) -> None:
     st.table(rows)
 
     report_path = metadata.get("report_path")
-    if MODE == "aws":
-        if report_path:
-            st.subheader("Report")
-            st.info(f"Report available in S3: `{report_path}`")
+
+    if not report_path:
+        # No report yet (run still in progress) - the report already
+        # contains branch names, diagnosis, and applied fix (see
+        # ReportGenerator._build_context), so this is just a lightweight
+        # "what's happening right now" signal until it exists, not a
+        # permanent second copy of that information.
+        for pipeline in pipelines:
+            diagnosis = pipeline.get("diagnosis")
+            if not diagnosis:
+                continue
+            st.write(f"**{pipeline.get('pipeline_id', '-')}:** {diagnosis}")
+            if pipeline.get("corrective_action"):
+                st.write(f"Fix applied: `{pipeline['corrective_action']}`")
         return
 
-    if report_path and Path(report_path).exists():
-        st.subheader("Report")
-        # The report renders in an <iframe>, a separate browsing context that
-        # only sees the OS/browser's real prefers-color-scheme - it has no
-        # visibility into Streamlit's own theme picker. They'll only mismatch
-        # if Streamlit's theme is manually forced away from "System".
+    st.subheader("Report")
+    # The report renders in an <iframe>, a separate browsing context that
+    # only sees the OS/browser's real prefers-color-scheme - it has no
+    # visibility into Streamlit's own theme picker. They'll only mismatch
+    # if Streamlit's theme is manually forced away from "System".
+    if MODE == "aws":
+        html = _fetch_s3_text(report_path)
+        if html is None:
+            st.info(f"Report was recorded at `{report_path}` but could not be read from S3.")
+        else:
+            st.components.v1.html(html, height=800, scrolling=True)
+    elif Path(report_path).exists():
         with open(report_path) as f:
             st.components.v1.html(f.read(), height=800, scrolling=True)
-    elif report_path:
+    else:
         st.info(f"Report was recorded at `{report_path}` but the file is no longer there.")
 
 
