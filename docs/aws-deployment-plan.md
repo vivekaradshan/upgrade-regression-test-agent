@@ -248,11 +248,25 @@ Verified against real AWS: the app starts and renders without error
 against real `Settings()`/`StateStore` wiring; `list_runs()` confirmed
 returning real run records from DynamoDB, sorted newest-first.
 
-### ⬜ Phase 14.8 — CI/CD
+### ⬜ Phase 14.8 — CI/CD (scoped down: plan-on-PR only, no auto-apply)
+**Revised from the original plan.** CI/CD's usual justification is gating
+promotion between environments (a bad change can't reach prod directly);
+that doesn't apply here since this project is deliberately single-
+environment (no dev/staging to promote through) - so a full
+`terraform-apply.yml` auto-deploying on every merge to `main` would add
+process friction (every infra tweak needs a PR+merge instead of a direct
+`terraform apply`) without the usual risk-mitigation payoff, for a
+solo-operated project.
+
+What's still worth having: infra changes should still go through a PR to
+`main` for review, not be pushed directly - so
 `.github/workflows/terraform-plan.yml` (runs on PRs touching `infra/`,
-posts the plan as a PR comment) and `terraform-apply.yml` (runs on merge
-to `main`, using the OIDC role from Phase 14.0 — no stored AWS credentials
-in GitHub Actions).
+posts the plan diff as a PR comment) is in scope. `terraform apply`
+itself stays manual, run locally the same way every change in Phases
+14.0-14.7 was - reviewed via the PR's plan comment first, then applied
+by hand after merge. The OIDC deploy role from Phase 14.0 remains built
+but unused for now; it's what a future `terraform-apply.yml` would use if
+this project ever did grow a second environment worth gating.
 
 ### ⬜ Phase 14.9 — End-to-end validation
 Trigger one real run via `--target aws` against the real manifest.

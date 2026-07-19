@@ -122,6 +122,21 @@ def render(run_id: str, snapshot: dict) -> None:
         "Duration", format_duration(metadata.get("created_at", ""), metadata.get("updated_at", ""))
     )
 
+    pr_url = metadata.get("pr_url")
+    if pr_url:
+        # pr_node.py raises a PR regardless of overall_status (title
+        # includes [PASSED] or [FAILED]) - auto_merge is always False
+        # (enforced by the manifest schema itself), so a human always has
+        # to review and merge this by hand either way. Surfacing it
+        # prominently here is the actual point of raising it, not just an
+        # audit trail entry.
+        overall_status = metadata.get("overall_status", "UNKNOWN")
+        if overall_status in ("PASSED", "SUCCEEDED"):
+            st.success("Validation passed - a PR is open for review.")
+        else:
+            st.warning(f"Run finished as {overall_status} - a PR is open summarizing what happened.")
+        st.link_button("Review & merge PR", pr_url)
+
     st.subheader("Pipeline status")
 
     if not pipelines:
