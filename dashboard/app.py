@@ -49,6 +49,7 @@ STATUS_ICONS = {
     "RUNNING": "🟡",
     "PENDING": "⚪",
     "FAILED": "🔴",
+    "AWAITING_APPROVAL": "🟠",
 }
 
 
@@ -137,6 +138,9 @@ def render(run_id: str, snapshot: dict) -> None:
             st.warning(f"Run finished as {overall_status} - a PR is open summarizing what happened.")
         st.link_button("Review & merge PR", pr_url)
 
+    if MODE == "aws" and metadata.get("pending_approval_task_token"):
+        render_approval_gate(run_id, metadata)
+
     st.subheader("Pipeline status")
 
     if not pipelines:
@@ -191,6 +195,54 @@ def render(run_id: str, snapshot: dict) -> None:
             st.components.v1.html(f.read(), height=800, scrolling=True)
     else:
         st.info(f"Report was recorded at `{report_path}` but the file is no longer there.")
+
+
+def render_approval_gate(run_id: str, metadata: dict) -> None:
+    """AWS-mode only: the pattern matcher didn't recognize this failure,
+    so the LLM proposed a fix - see analyze_node.py's AWAIT_APPROVAL
+    branch. The execution is genuinely paused (Step Functions
+    .waitForTaskToken) waiting on this decision, regardless of how
+    confident the LLM was - approve_run_handler.py is what actually
+    resumes it."""
+    pending_state = json.loads(metadata["pending_approval_state"])
+    analysis_result = pending_state.get("analysis_result") or {}
+    fix_config = analysis_result.get("fix_config")
+
+    st.warning("This run's target job failed with a failure the pattern matcher didn't recognize. The LLM proposed a fix - review before it's applied.")
+    st.write(f"**Diagnosis:** {analysis_result.get('diagnosis', 'n/a')}")
+    confidence = analysis_result.get("confidence")
+    if confidence is not None:
+        st.write(f"**Confidence:** {confidence * 100:.0f}%")
+    if analysis_result.get("is_mitigation"):
+        st.write("**Note:** this is a mitigation (works around the new Spark version's behavior), not a fix that adapts the pipeline to it.")
+
+    if fix_config:
+        st.write(f"**Proposed fix:** set `{fix_config['key']} = {fix_config['value']}` on the target branch, then retry.")
+    else:
+        st.write("**No structured fix available** - this diagnosis can only be rejected, not applied.")
+
+    settings = Settings()
+    col1, col2 = st.columns(2)
+    if fix_config and col1.button("Approve & apply fix", key=f"approve-{run_id}"):
+        _submit_approval(run_id, settings, approved=True)
+    if col2.button("Reject", key=f"reject-{run_id}"):
+        _submit_approval(run_id, settings, approved=False)
+
+
+def _submit_approval(run_id: str, settings: Settings, approved: bool) -> None:
+    try:
+        with st.spinner("Submitting decision..."):
+            result = signed_post(
+                f"{settings.api_endpoint}/runs/{run_id}/approve",
+                {"approved": approved},
+                settings.aws_region,
+            )
+    except (NoCredentialsError, SignedRequestError) as e:
+        st.error(str(e))
+        return
+
+    st.success(f"Decision recorded: {result['status']}")
+    st.rerun()
 
 
 def render_trigger_form(settings: Settings) -> None:

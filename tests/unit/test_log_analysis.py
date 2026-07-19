@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.analysis.corrective_actions import CorrectiveActionApplier
 from src.analysis.llm_analyzer import LLMAnalyzer
 from src.analysis.log_reader import LogReader
@@ -91,24 +93,23 @@ def test_corrective_action_applier_to_spark_config_returns_new_dict():
     assert original == {"spark.master": "local[*]"}
 
 
-def test_llm_analyzer_parses_mocked_response():
+def _mock_openai_response(content: dict, prompt_tokens: int = 100, completion_tokens: int = 50):
     mock_response = MagicMock()
-    mock_response.choices = [
-        MagicMock(
-            message=MagicMock(
-                content=json.dumps(
-                    {
-                        "root_cause": "Unrecognized Spark 4.0 behavior change",
-                        "classification": "config_fix",
-                        "fix_suggestion": "set spark.sql.someFlag=false",
-                        "confidence": 0.75,
-                    }
-                )
-            )
-        )
-    ]
+    mock_response.choices = [MagicMock(message=MagicMock(content=json.dumps(content)))]
+    mock_response.usage = MagicMock(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+    return mock_response
+
+
+def test_llm_analyzer_parses_mocked_response():
     mock_client = MagicMock()
-    mock_client.chat.completions.create.return_value = mock_response
+    mock_client.chat.completions.create.return_value = _mock_openai_response(
+        {
+            "root_cause": "Unrecognized Spark 4.0 behavior change",
+            "classification": "config_fix",
+            "fix_suggestion": "set spark.sql.someFlag=false",
+            "confidence": 0.75,
+        }
+    )
 
     analyzer = LLMAnalyzer(
         api_key="unused",
@@ -124,6 +125,46 @@ def test_llm_analyzer_parses_mocked_response():
     assert diagnosis.classification == "config_fix"
     assert diagnosis.confidence == 0.75
     mock_client.chat.completions.create.assert_called_once()
+
+
+def test_llm_analyzer_captures_token_usage_and_estimates_cost():
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _mock_openai_response(
+        {"root_cause": "x", "classification": "escalate", "fix_suggestion": None, "confidence": 0.5},
+        prompt_tokens=1000,
+        completion_tokens=500,
+    )
+
+    analyzer = LLMAnalyzer(api_key="unused", client=mock_client)
+    diagnosis = analyzer.analyze("log", {})
+
+    assert diagnosis.model == "gpt-4o-mini"
+    assert diagnosis.prompt_tokens == 1000
+    assert diagnosis.completion_tokens == 500
+    # 1000 * $0.150/1M + 500 * $0.600/1M
+    assert diagnosis.estimated_cost_usd == pytest.approx(0.00045)
+
+
+def test_llm_analyzer_handles_response_with_no_usage_attribute():
+    mock_response = MagicMock(spec=["choices"])
+    mock_response.choices = [
+        MagicMock(
+            message=MagicMock(
+                content=json.dumps(
+                    {"root_cause": "x", "classification": "escalate", "fix_suggestion": None, "confidence": 0.5}
+                )
+            )
+        )
+    ]
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+
+    analyzer = LLMAnalyzer(api_key="unused", client=mock_client)
+    diagnosis = analyzer.analyze("log", {})
+
+    assert diagnosis.prompt_tokens == 0
+    assert diagnosis.completion_tokens == 0
+    assert diagnosis.estimated_cost_usd == 0.0
 
 
 def test_llm_analyzer_without_api_key_returns_escalate_placeholder():

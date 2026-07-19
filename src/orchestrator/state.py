@@ -13,8 +13,8 @@ from typing import TypedDict
 class UpgradeTestState(TypedDict):
     run_id: str
     manifest: dict  # serialized TestManifest (model_dump)
-    phase: str  # BRANCH | BUILD | EXECUTE | ANALYZE | VALIDATE | REPORT | PR
-    status: str  # RUNNING | SUCCEEDED | FAILED
+    phase: str  # BRANCH | BUILD | EXECUTE | ANALYZE | AWAIT_APPROVAL | VALIDATE | REPORT | PR
+    status: str  # RUNNING | SUCCEEDED | FAILED | AWAITING_APPROVAL
     baseline_branch: str
     target_branch: str
     build_status: str  # PENDING | SUCCEEDED | FAILED

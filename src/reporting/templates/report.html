@@ -14,7 +14,7 @@
   h1, h2 { border-bottom: 2px solid var(--border); padding-bottom: 0.3rem; }
   .status-badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 4px; font-weight: bold; color: white; }
   .status-PASSED, .status-SUCCEEDED { background: #2e7d32; }
-  .status-WARNING { background: #b8860b; }
+  .status-WARNING, .status-AWAITING_APPROVAL { background: #b8860b; }
   .status-FAILED { background: #c62828; }
   table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
   th, td { border: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; }
@@ -76,9 +76,15 @@
 <h2>Failure Analysis</h2>
 <p><strong>Diagnosis:</strong> {{ analysis_result.diagnosis }}</p>
 <p><strong>Source:</strong> {{ analysis_result.source }}</p>
+{% if analysis_result.source == "llm" %}
+<p><strong>Confidence:</strong> {{ "%.0f"|format(analysis_result.confidence * 100) }}%</p>
+{% if analysis_result.is_mitigation %}
+<p><strong>Note:</strong> this is a mitigation (works around the new Spark version's behavior) rather than a fix that adapts the pipeline to it.</p>
+{% endif %}
+{% endif %}
 {% if analysis_result.fix_config %}
-<h2>Corrective Action Taken</h2>
-<p>Set <code>{{ analysis_result.fix_config.key }} = {{ analysis_result.fix_config.value }}</code> on the target branch, then retried.</p>
+<h2>{{ "Proposed Fix (pending human approval)" if overall_status == "AWAITING_APPROVAL" else "Corrective Action Taken" }}</h2>
+<p>Set <code>{{ analysis_result.fix_config.key }} = {{ analysis_result.fix_config.value }}</code> on the target branch{{ ", then retried." if overall_status != "AWAITING_APPROVAL" else "." }}</p>
 {% endif %}
 {% endif %}
 
@@ -89,6 +95,17 @@
   <li>{{ recommendation }}</li>
   {% endfor %}
 </ul>
+{% endif %}
+
+{% if llm_usage %}
+<h2>LLM Usage</h2>
+<p>The pattern matcher didn't recognize {{ llm_usage.count }} failure(s) this run, so the LLM fallback was consulted.</p>
+<table>
+  <tr><th>Calls</th><td>{{ llm_usage.count }}</td></tr>
+  <tr><th>Prompt tokens</th><td>{{ llm_usage.total_prompt_tokens }}</td></tr>
+  <tr><th>Completion tokens</th><td>{{ llm_usage.total_completion_tokens }}</td></tr>
+  <tr><th>Estimated cost</th><td>${{ "%.5f"|format(llm_usage.total_estimated_cost_usd) }}</td></tr>
+</table>
 {% endif %}
 
 </body>

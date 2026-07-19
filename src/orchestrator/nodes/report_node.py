@@ -15,7 +15,8 @@ def make_generate_report_node(state_store: StateStore, reports_dir: str):
         manifest = TestManifest.model_validate(state["manifest"])
         run_id = state["run_id"]
 
-        html_report, json_report = ReportGenerator().generate(run_id, manifest, state)
+        llm_call_events = [e for e in state_store.get_events(run_id) if e.get("event") == "llm_call"]
+        html_report, json_report = ReportGenerator().generate(run_id, manifest, state, llm_call_events)
 
         run_reports_dir = Path(reports_dir) / run_id
         run_reports_dir.mkdir(parents=True, exist_ok=True)

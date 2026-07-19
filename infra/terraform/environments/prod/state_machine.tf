@@ -27,6 +27,7 @@ data "aws_iam_policy_document" "step_functions_execution_permissions" {
       aws_lambda_function.generate_report.arn,
       aws_lambda_function.raise_pr.arn,
       aws_lambda_function.read_validation_results.arn,
+      aws_lambda_function.await_approval.arn,
     ]
   }
 
@@ -98,6 +99,7 @@ resource "aws_sfn_state_machine" "orchestrator" {
     generate_report_arn          = aws_lambda_function.generate_report.arn
     raise_pr_arn                 = aws_lambda_function.raise_pr.arn
     read_validation_results_arn  = aws_lambda_function.read_validation_results.arn
+    await_approval_arn           = aws_lambda_function.await_approval.arn
   })
 
   # Phase 14.6: full state-transition detail in CloudWatch Logs, not just

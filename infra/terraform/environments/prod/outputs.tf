@@ -70,6 +70,14 @@ output "lambda_read_validation_results_arn" {
   value = aws_lambda_function.read_validation_results.arn
 }
 
+output "lambda_await_approval_arn" {
+  value = aws_lambda_function.await_approval.arn
+}
+
+output "lambda_approve_run_arn" {
+  value = aws_lambda_function.approve_run.arn
+}
+
 output "state_machine_arn" {
   value = aws_sfn_state_machine.orchestrator.arn
 }

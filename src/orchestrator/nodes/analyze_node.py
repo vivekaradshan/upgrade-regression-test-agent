@@ -7,17 +7,28 @@ matches. An auto-fix is committed to the target branch via the GitHub API
 (not the local checkout) since execute_jobs re-syncs the local checkout
 from the remote branch on every run (git reset --hard) - a local-only
 edit would just be discarded before the retry.
+
+A pattern-matcher fix is pre-approved by whoever wrote that regex into the
+manifest, so it applies immediately. An LLM-sourced fix never auto-applies
+regardless of confidence - it always routes to phase "AWAIT_APPROVAL"
+instead of "REPORT"/"FAILED", so a human can review the proposed fix
+before it touches the target branch. Locally, there's no approval
+mechanism (that's AWS-only - see src/aws_lambda/await_approval_handler.py
+and approve_run_handler.py), so build_graph's _route_after_analysis simply
+falls through to generate_report for any phase it doesn't recognize,
+same as it always has for "REPORT" - the only local-visible difference is
+a more accurate status label ("AWAITING_APPROVAL" instead of "FAILED") for
+a failure nobody's pattern anticipated and a human hasn't looked at yet.
 """
 
 from __future__ import annotations
 
-import yaml
-
 from src.analysis.llm_analyzer import LLMAnalyzer
 from src.analysis.log_reader import LogReader
 from src.analysis.pattern_matcher import PatternMatcher
-from src.config.manifest import FileModification, TestManifest
+from src.config.manifest import TestManifest
 from src.orchestrator.state import UpgradeTestState
+from src.tools.config_fix import apply_fix_to_target_branch, find_spark_config_file
 from src.tools.github_client import GitHubClient
 from src.tools.state_store import StateStore
 
@@ -57,13 +68,31 @@ def make_analyze_logs_node(
                 "source": "llm",
                 "diagnosis": diagnosis.root_cause,
                 "action": diagnosis.classification,
-                # The LLM's fix_suggestion is free text, not a structured
-                # {key, value} pair, so it can't be auto-applied the way a
-                # manifest-defined fix_config can - always escalate for
-                # human review instead of guessing how to parse it.
+                # Never auto-applied regardless of confidence - always
+                # routes through the AWAIT_APPROVAL branch below instead
+                # of the auto-fix branch a pattern-matcher fix can take.
                 "auto_fix": False,
-                "fix_config": None,
+                "fix_config": (
+                    {"key": diagnosis.fix_key, "value": diagnosis.fix_value}
+                    if diagnosis.fix_key and diagnosis.fix_value
+                    else None
+                ),
+                "confidence": diagnosis.confidence,
+                "is_mitigation": diagnosis.is_mitigation,
             }
+            # Recorded on the append-only event log (not a current-state
+            # field) since a run can call the LLM multiple times across
+            # retries - report_node.py sums these via get_events() for the
+            # report's "LLM usage" section (Phase 15.0's tracing half).
+            state_store.record_event(
+                run_id,
+                phase="ANALYZE",
+                event="llm_call",
+                model=diagnosis.model,
+                prompt_tokens=diagnosis.prompt_tokens,
+                completion_tokens=diagnosis.completion_tokens,
+                estimated_cost_usd=diagnosis.estimated_cost_usd,
+            )
 
         retry_count = state["retry_count"]
         max_retries = manifest.log_analysis.retry.max_retries
@@ -78,15 +107,16 @@ def make_analyze_logs_node(
 
         if analysis_result["auto_fix"] and retry_count < max_retries:
             fix_config = analysis_result["fix_config"]
-            config_file = _find_spark_config_file(
+            config_file = find_spark_config_file(
                 github_client, state["target_branch"], manifest.source_control.target.modifications
             )
-            _apply_fix_to_target_branch(
+            apply_fix_to_target_branch(
                 github_client,
                 branch=state["target_branch"],
                 config_file_path=config_file,
                 key=fix_config["key"],
                 value=fix_config["value"],
+                commit_message=f"auto-fix: set {fix_config['key']}={fix_config['value']}",
             )
 
             new_retry_count = retry_count + 1
@@ -113,6 +143,29 @@ def make_analyze_logs_node(
                 "phase": "RETRY",
             }
 
+        if analysis_result["source"] == "llm":
+            state_store.update_pipeline_status(
+                run_id,
+                manifest.pipeline.id,
+                status="AWAITING_APPROVAL",
+                diagnosis=analysis_result["diagnosis"],
+                corrective_action=(
+                    f"proposed: set {analysis_result['fix_config']['key']}={analysis_result['fix_config']['value']}"
+                    if analysis_result["fix_config"]
+                    else "proposed: no structured fix available - review required"
+                ),
+            )
+            state_store.record_event(
+                run_id, phase="ANALYZE", event="awaiting_approval", confidence=analysis_result["confidence"]
+            )
+            state_store.update_run_status(run_id, phase="AWAIT_APPROVAL", status="AWAITING_APPROVAL")
+
+            return {
+                "analysis_result": analysis_result,
+                "phase": "AWAIT_APPROVAL",
+                "status": "AWAITING_APPROVAL",
+            }
+
         reason = "max_retries_exhausted" if analysis_result["auto_fix"] else "not_auto_fixable"
         state_store.update_pipeline_status(
             run_id,
@@ -132,44 +185,3 @@ def make_analyze_logs_node(
         }
 
     return analyze_logs
-
-
-def _find_spark_config_file(
-    github_client: GitHubClient, branch: str, modifications: list[FileModification]
-) -> str:
-    """Locates the manifest-declared file that actually holds a spark_config
-    block, instead of assuming it's always modifications[0] - a manifest can
-    list multiple files to modify (e.g. a version bump in one file, an
-    unrelated change in another), and the fix needs to land in the one a
-    Spark job actually reads its config from."""
-    for modification in modifications:
-        if not modification.file.endswith((".yaml", ".yml")):
-            continue
-        content, _ = github_client.get_file_content(modification.file, branch)
-        try:
-            parsed = yaml.safe_load(content)
-        except yaml.YAMLError:
-            continue
-        if isinstance(parsed, dict) and "spark_config" in parsed:
-            return modification.file
-
-    # Fall back to the first modification rather than raising, so a manifest
-    # that hasn't adopted the spark_config convention yet still behaves as
-    # it did before this fix.
-    return modifications[0].file
-
-
-def _apply_fix_to_target_branch(
-    github_client: GitHubClient, branch: str, config_file_path: str, key: str, value: str
-) -> None:
-    content, sha = github_client.get_file_content(config_file_path, branch)
-    config = yaml.safe_load(content)
-    config.setdefault("spark_config", {})[key] = value
-
-    github_client.update_file(
-        path=config_file_path,
-        branch=branch,
-        content=yaml.safe_dump(config, sort_keys=False),
-        sha=sha,
-        message=f"auto-fix: set {key}={value}",
-    )

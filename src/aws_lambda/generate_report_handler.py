@@ -24,7 +24,8 @@ def handler(event: dict, context) -> dict:
     run_id = event["run_id"]
     state_store = get_state_store()
 
-    html_report, json_report = ReportGenerator().generate(run_id, manifest, event)
+    llm_call_events = [e for e in state_store.get_events(run_id) if e.get("event") == "llm_call"]
+    html_report, json_report = ReportGenerator().generate(run_id, manifest, event, llm_call_events)
 
     html_key = f"{run_id}/report.html"
     json_key = f"{run_id}/report.json"

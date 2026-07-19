@@ -488,3 +488,206 @@ class TestStartRunHandler:
         result = srh.handler({}, context=None)
 
         assert result["statusCode"] == 400
+
+
+class TestAwaitApprovalHandler:
+    def test_persists_task_token_and_state(self, manifest_dict):
+        from src.aws_lambda import await_approval_handler as aah
+
+        pending_state = {"run_id": "run-1", "manifest": manifest_dict, "phase": "AWAIT_APPROVAL"}
+        event = {"taskToken": "token-abc", "state": pending_state}
+        mock_state_store = MagicMock()
+
+        with patch.object(aah, "get_state_store", return_value=mock_state_store):
+            aah.handler(event, context=None)
+
+        mock_state_store.update_run_status.assert_called_once()
+        call_kwargs = mock_state_store.update_run_status.call_args.kwargs
+        assert call_kwargs["pending_approval_task_token"] == "token-abc"
+        assert json.loads(call_kwargs["pending_approval_state"]) == pending_state
+        mock_state_store.record_event.assert_called_once()
+
+
+class TestApproveRunHandler:
+    def _pending_state(self, manifest_dict, fix_config=None):
+        return {
+            "run_id": "run-1",
+            "manifest": manifest_dict,
+            "target_branch": "auto/upgrade-test/run-1-target",
+            "retry_count": 1,
+            "analysis_result": {
+                "source": "llm",
+                "diagnosis": "Codec [lz4raw] is not available",
+                "fix_config": fix_config,
+                "confidence": 0.9,
+            },
+        }
+
+    def test_approve_applies_fix_and_resumes_execution(self, manifest_dict):
+        from src.aws_lambda import approve_run_handler as arh
+
+        pending_state = self._pending_state(
+            manifest_dict, fix_config={"key": "spark.sql.parquet.compression.codec", "value": "lz4_raw"}
+        )
+        mock_state_store = MagicMock()
+        mock_state_store.get_run_metadata.return_value = {
+            "pending_approval_task_token": "token-abc",
+            "pending_approval_state": json.dumps(pending_state),
+        }
+        mock_github_client = MagicMock()
+        mock_github_client.get_file_content.return_value = ("spark_config: {}\n", "sha-1")
+
+        event = {"pathParameters": {"run_id": "run-1"}, "body": json.dumps({"approved": True})}
+
+        with (
+            patch.object(arh, "get_state_store", return_value=mock_state_store),
+            patch.object(arh, "get_github_client", return_value=mock_github_client),
+            patch.object(arh, "sfn") as mock_sfn,
+        ):
+            result = arh.handler(event, context=None)
+
+        assert result["statusCode"] == 200
+        mock_github_client.update_file.assert_called_once()
+        mock_sfn.send_task_success.assert_called_once()
+        resumed_output = json.loads(mock_sfn.send_task_success.call_args.kwargs["output"])
+        assert resumed_output["phase"] == "RETRY"
+        assert resumed_output["retry_count"] == 2
+        mock_state_store.update_run_status.assert_called_once()
+        assert mock_state_store.update_run_status.call_args.kwargs["approved_llm_fix"] is True
+
+    def test_approve_without_structured_fix_returns_400(self, manifest_dict):
+        from src.aws_lambda import approve_run_handler as arh
+
+        pending_state = self._pending_state(manifest_dict, fix_config=None)
+        mock_state_store = MagicMock()
+        mock_state_store.get_run_metadata.return_value = {
+            "pending_approval_task_token": "token-abc",
+            "pending_approval_state": json.dumps(pending_state),
+        }
+
+        event = {"pathParameters": {"run_id": "run-1"}, "body": json.dumps({"approved": True})}
+
+        with (
+            patch.object(arh, "get_state_store", return_value=mock_state_store),
+            patch.object(arh, "sfn") as mock_sfn,
+        ):
+            result = arh.handler(event, context=None)
+
+        assert result["statusCode"] == 400
+        mock_sfn.send_task_success.assert_not_called()
+
+    def test_reject_sends_task_failure(self, manifest_dict):
+        from src.aws_lambda import approve_run_handler as arh
+
+        pending_state = self._pending_state(manifest_dict, fix_config=None)
+        mock_state_store = MagicMock()
+        mock_state_store.get_run_metadata.return_value = {
+            "pending_approval_task_token": "token-abc",
+            "pending_approval_state": json.dumps(pending_state),
+        }
+
+        event = {"pathParameters": {"run_id": "run-1"}, "body": json.dumps({"approved": False})}
+
+        with (
+            patch.object(arh, "get_state_store", return_value=mock_state_store),
+            patch.object(arh, "sfn") as mock_sfn,
+        ):
+            result = arh.handler(event, context=None)
+
+        assert result["statusCode"] == 200
+        mock_sfn.send_task_failure.assert_called_once_with(
+            taskToken="token-abc", error="ApprovalRejected", cause="Human rejected the proposed LLM fix"
+        )
+        mock_state_store.update_pipeline_status.assert_called_once()
+        assert mock_state_store.update_pipeline_status.call_args.kwargs["status"] == "FAILED"
+
+    def test_no_pending_approval_returns_409(self):
+        from src.aws_lambda import approve_run_handler as arh
+
+        mock_state_store = MagicMock()
+        mock_state_store.get_run_metadata.return_value = {}
+
+        event = {"pathParameters": {"run_id": "run-1"}, "body": json.dumps({"approved": True})}
+
+        with patch.object(arh, "get_state_store", return_value=mock_state_store):
+            result = arh.handler(event, context=None)
+
+        assert result["statusCode"] == 409
+
+    def test_missing_run_returns_404(self):
+        from src.aws_lambda import approve_run_handler as arh
+
+        mock_state_store = MagicMock()
+        mock_state_store.get_run_metadata.side_effect = KeyError("not found")
+
+        event = {"pathParameters": {"run_id": "does-not-exist"}, "body": json.dumps({"approved": True})}
+
+        with patch.object(arh, "get_state_store", return_value=mock_state_store):
+            result = arh.handler(event, context=None)
+
+        assert result["statusCode"] == 404
+
+
+class TestRaisePrHandler:
+    def test_no_pattern_pr_when_run_was_not_an_approved_llm_fix(self, manifest_dict):
+        from src.aws_lambda import raise_pr_handler as rph
+
+        event = {
+            "run_id": "run-1",
+            "manifest": manifest_dict,
+            "status": "PASSED",
+            "analysis_result": {},
+        }
+        mock_state_store = MagicMock()
+        mock_state_store.get_run_metadata.return_value = {}  # no approved_llm_fix flag
+
+        with (
+            patch.object(rph, "get_github_client", return_value=MagicMock()),
+            patch.object(rph, "get_state_store", return_value=mock_state_store),
+            patch.object(rph, "make_raise_pr_node") as mock_make_node,
+            patch.object(rph, "GitHubClient") as mock_github_client_cls,
+        ):
+            mock_make_node.return_value = lambda state: {"pr_url": "http://x", "phase": "DONE"}
+            rph.handler(event, context=None)
+
+        mock_github_client_cls.assert_not_called()
+
+    def test_opens_pattern_library_pr_when_approved_fix_led_to_pass(self, manifest_dict):
+        from src.aws_lambda import raise_pr_handler as rph
+
+        event = {
+            "run_id": "run-1",
+            "manifest": manifest_dict,
+            "status": "PASSED",
+            "analysis_result": {
+                "source": "llm",
+                "diagnosis": "Codec [lz4raw] is not available",
+                "fix_config": {"key": "spark.sql.parquet.compression.codec", "value": "lz4_raw"},
+            },
+        }
+        mock_state_store = MagicMock()
+        mock_state_store.get_run_metadata.return_value = {"approved_llm_fix": True}
+
+        mock_pattern_client = MagicMock()
+        mock_pattern_client.get_default_branch_sha.return_value = "main-sha"
+        mock_pattern_client.get_file_content.return_value = (
+            "log_analysis:\n  known_failure_patterns: []\n",
+            "manifest-sha",
+        )
+
+        with (
+            patch.object(rph, "get_github_client", return_value=MagicMock()),
+            patch.object(rph, "get_state_store", return_value=mock_state_store),
+            patch.object(rph, "make_raise_pr_node") as mock_make_node,
+            patch.object(rph, "GitHubClient", return_value=mock_pattern_client),
+            patch.object(rph, "get_github_token", return_value="token"),
+        ):
+            mock_make_node.return_value = lambda state: {"pr_url": "http://x", "phase": "DONE"}
+            rph.handler(event, context=None)
+
+        mock_pattern_client.create_branch.assert_called_once()
+        mock_pattern_client.update_file.assert_called_once()
+        mock_pattern_client.create_pull_request.assert_called_once()
+        updated_content = mock_pattern_client.update_file.call_args.kwargs["content"]
+        assert "lz4_raw" in updated_content
+        mock_pattern_client.close.assert_called_once()

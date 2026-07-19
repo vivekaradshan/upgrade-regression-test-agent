@@ -251,9 +251,43 @@
       "Type": "Choice",
       "Choices": [
         { "Variable": "$.phase", "StringEquals": "RETRY", "Next": "CheckRetry" },
-        { "Variable": "$.phase", "StringEquals": "VALIDATE", "Next": "SetValidateVariant" }
+        { "Variable": "$.phase", "StringEquals": "VALIDATE", "Next": "SetValidateVariant" },
+        { "Variable": "$.phase", "StringEquals": "AWAIT_APPROVAL", "Next": "AwaitApproval" }
       ],
       "Default": "GenerateReport"
+    },
+    "AwaitApproval": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${await_approval_arn}",
+        "Payload": {
+          "taskToken.$": "$$.Task.Token",
+          "state.$": "$"
+        }
+      },
+      "ResultPath": "$.stepResult",
+      "OutputPath": "$.stepResult",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.approvalError",
+          "Next": "ApprovalRejected"
+        }
+      ],
+      "Next": "CheckRetry"
+    },
+    "ApprovalRejected": {
+      "Type": "Pass",
+      "Result": "REPORT",
+      "ResultPath": "$.phase",
+      "Next": "ApprovalRejectedStatus"
+    },
+    "ApprovalRejectedStatus": {
+      "Type": "Pass",
+      "Result": "FAILED",
+      "ResultPath": "$.status",
+      "Next": "GenerateReport"
     },
     "SetValidateVariant": {
       "Type": "Pass",
