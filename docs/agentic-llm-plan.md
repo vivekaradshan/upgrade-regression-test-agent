@@ -2,10 +2,17 @@
 
 ## Status
 
-Not started. Depends on Step 14 (AWS production deployment) being
-complete first — see [`docs/aws-deployment-plan.md`](aws-deployment-plan.md)
-for that status. This document expands on several items already listed in
-the main [README](../README.md)'s Future Enhancements section (HITL
+Phases 15.0 (tracing half only), 15.1 (simplified), 15.3 (AWS-only), and
+15.5 (pattern-library-growth half only) are built and deployed against
+real AWS — not yet exercised through a real seeded end-to-end run.
+Phases 15.2 and 15.4 are not started. See "Deviations from the original
+plan" below each built phase for exactly what shipped differently than
+originally designed here, and why.
+
+Depends on Step 14 (AWS production deployment) being complete first —
+see [`docs/aws-deployment-plan.md`](aws-deployment-plan.md) for that
+status. This document expands on several items already listed in the
+main [README](../README.md)'s Future Enhancements section (HITL
 approval, self-improving pattern library, mitigation vs. remediation
 labeling) into a concrete, phased build plan.
 
@@ -18,9 +25,16 @@ returns a `Diagnosis` dataclass via OpenAI's `response_format:
 json_object` mode (no schema enforcement, no tool-calling). Critically,
 whatever it diagnoses is *never* auto-applied — `analyze_node.py` always
 hardcodes `auto_fix=False` for the LLM path (unlike the pattern-matcher
-path, which can auto-fix and retry) because `fix_suggestion` is free text,
-not a structured `{key, value}` pair. Every LLM diagnosis today is a dead
-end that escalates straight to a human.
+path, which can auto-fix and retry) because `fix_suggestion` was free
+text, not a structured `{key, value}` pair. As originally written, every
+LLM diagnosis was a dead end that escalated straight to a human with
+nothing they could act on beyond reading prose.
+
+*(Updated after Phase 15.1/15.3 were built: this is no longer strictly
+true — `Diagnosis` now carries a structured `fix_key`/`fix_value`, and a
+human can act on it via the dashboard's approval flow. It's still true
+that nothing auto-applies regardless of confidence, by explicit design —
+see Phase 15.1's "Deviation" note below.)*
 
 The goal of Step 15 is to make the LLM path load-bearing instead of a
 dead end, without weakening safety — by leaning on something this system
@@ -44,10 +58,12 @@ revisited later without blocking this work.
 - `PatternMatcher` stays the first-line, free, deterministic path —
   nothing here replaces it, the LLM path only gets smarter.
 - The retry loop's shape (`analyze_node.py`'s `RETRY`/`VALIDATE`/`REPORT`
-  routing, `manifest.log_analysis.retry.max_retries`) is unchanged — new
+  routing, plus the new `AWAIT_APPROVAL` phase, `manifest.log_analysis.
+  retry.max_retries`) is unchanged in its core mechanics — new
   LLM-driven fixes flow through the exact same
-  `_apply_fix_to_target_branch` → retry → re-execute → `validate_data`
-  cycle that already exists and is already the empirical verification
+  `apply_fix_to_target_branch` (now in `src/tools/config_fix.py`) →
+  retry → re-execute → `validate_data` cycle that already exists and is
+  already the empirical verification
   gate for config fixes.
 - Blast radius stays exactly as-built: fixes only ever land on
   `auto/upgrade-test/*` branches, never `main`; `pr.auto_merge` stays
@@ -55,64 +71,72 @@ revisited later without blocking this work.
 
 ## Phase 15.0 — Eval harness + LLM call tracing (build first, not last)
 
-You can't safely raise autonomy on a system you can't measure. Add
-`tests/evals/fixtures/` — real or realistic failure logs (start from the
-existing `tests/fixtures/spark_ansi_error.log` pattern) each paired with a
-golden diagnosis (`{expected_classification, expected_fix_config_or_null,
-expected_auto_fixable}`). A pytest suite
-(`tests/evals/test_llm_analyzer_eval.py`) runs `LLMAnalyzer.analyze()`
-against each fixture and scores classification accuracy — this is the
-"promotion policy" gate every later phase's autonomy claims get checked
-against, and it's the first thing to build because Phases 15.1+ are
-meaningless to trust without it.
+### ✅ Tracing — built
+`LLMAnalyzer.analyze()`'s `Diagnosis` now carries `model`, `prompt_tokens`,
+`completion_tokens`, `estimated_cost_usd` (extracted from the real OpenAI
+response's `usage` field; cost is estimated via a hardcoded per-token
+pricing table since OpenAI doesn't return billed cost directly).
+`analyze_node.py` records one `event="llm_call"` per invocation via
+`state_store.record_event()` (as planned — no schema change needed);
+`report_node.py`/`generate_report_handler.py` sum these via
+`state_store.get_events()` into a new "LLM Usage" report section
+(`report_generator.py`, `report.html`), omitted entirely when the LLM was
+never consulted. Verified with a real OpenAI call against a hand-built
+failure log (the `lz4raw`→`lz4_raw` codec rename, a real Spark 4.0 change
+already in the manifest's `migration_notes` but absent from
+`known_failure_patterns`) — correctly returned 422 prompt / 94 completion
+tokens and ~$0.00012 estimated cost.
 
-Alongside: minimal LLM call tracing, no new SaaS dependency. Extend
-`state_store.record_event()` (already accepts arbitrary `**details`, no
-schema change needed) to log `model`, `prompt_tokens`, `completion_tokens`,
-and estimated cost on every `LLMAnalyzer.analyze()` call — surfaced in the
-existing run report (`report_generator.py`) as a new "LLM usage" section.
+### ⬜ Eval harness — not built
+`tests/evals/fixtures/` + `tests/evals/test_llm_analyzer_eval.py` as
+originally planned don't exist yet. This is a real gap — later phases'
+"this can be trusted" claims (specifically Phase 15.1's decision to
+always require human approval regardless of confidence, see below) are
+currently a judgment call, not something falsifiable against a scored
+corpus.
 
-**Verify**: `pytest tests/evals/` scores and prints a pass rate; a real
-run's report shows token/cost figures for any LLM call it made.
+**Verify**: `pytest tests/evals/` scores and prints a pass rate (not yet
+possible — harness doesn't exist); a real run's report shows token/cost
+figures for any LLM call it made (done — see above).
 
-## Phase 15.1 — Structured fix output + confidence-gated auto-apply
+## Phase 15.1 — Structured fix output ✅ built (simplified — no auto-apply)
 
-Replace `Diagnosis` (free-text `fix_suggestion`) with a Pydantic
-`ProposedFix` model, requested via OpenAI's tool-calling (function-calling
-schema), not the current manual `json.loads` on `json_object` mode —
-removes an entire class of malformed-response bugs the current code has
-no guard against:
+### What shipped
+`Diagnosis` (`src/analysis/llm_analyzer.py`) was extended in place rather
+than replaced with a separate `ProposedFix` Pydantic model — it now
+carries `fix_key`, `fix_value`, and `is_mitigation` alongside the
+existing fields, still requested via the same `response_format:
+json_object` prompt (just asking for three more JSON keys) and parsed
+with plain `json.loads`, not OpenAI tool-calling / schema-enforced
+output. `fix_key`/`fix_value` are the same `{key, value}` shape a
+pattern-matcher `fix_config` already uses — the part that actually
+matters (something a human-approved fix can execute), extracted into
+`src/tools/config_fix.py` so both the pattern-matcher auto-fix path and
+the new human-approved-fix path (Phase 15.3) apply a fix identically.
 
-```python
-class ProposedFix(BaseModel):
-    fix_type: Literal["config", "escalate"]  # "code_patch" deferred to 15.4
-    config_key: str | None
-    config_value: str | None
-    rationale: str
-    confidence: float
-    is_mitigation: bool  # defers real migration vs. actually fixes it
-```
+`is_mitigation` is surfaced in `analysis_result` and the report/dashboard
+— the README's "mitigation vs. remediation labeling" backlog item is
+implemented for the LLM path specifically.
 
-`analyze_node.py`'s LLM branch changes from always `auto_fix=False` to:
-`fix_type == "config" and confidence >= manifest-configurable threshold`
-→ auto-apply via the *existing* `_apply_fix_to_target_branch`, exactly
-the same code path pattern-matcher fixes already use, so the retry loop's
-empirical verification (re-run, does it actually pass?) applies
-unchanged. Below threshold, or `fix_type == "escalate"` → same escalation
-path as today. `is_mitigation` gets surfaced in the PR body — this phase
-is what implements the README's existing "mitigation vs. remediation
-labeling" backlog item.
-
-Manifest gets one new optional field:
-`log_analysis.llm_auto_fix_confidence_threshold` (default e.g. `0.85`),
-schema-validated in `src/config/manifest.py` alongside the existing
-`RetryConfig`.
+### Deviation: no confidence-gated auto-apply, no manifest threshold
+The plan's central mechanism — `confidence >= threshold` → auto-apply —
+was **not** built. Instead, `analyze_node.py`'s LLM branch *always*
+routes to phase `AWAIT_APPROVAL` (Phase 15.3) regardless of confidence,
+by explicit decision made when actually building this: a human must
+approve every LLM-diagnosed fix, full stop, no matter how confident the
+model is. No `log_analysis.llm_auto_fix_confidence_threshold` manifest
+field exists. Confidence is still captured and shown to the human
+approving the fix — it informs their judgment, it just doesn't
+autonomously gate anything (yet; this is exactly the kind of decision the
+missing eval harness above should eventually inform, rather than it
+being asserted).
 
 **Verify**: extend the Phase 15.0 eval harness with confidence-threshold
-cases; a real manifest run where the pattern matcher is deliberately
-disabled for one known failure confirms the LLM path now auto-fixes and
-the retry loop actually resolves it, end-to-end, same as a
-pattern-matcher fix does today.
+cases (moot until an auto-apply threshold exists); a real manifest run
+where the pattern matcher genuinely doesn't recognize the failure
+confirms the LLM path produces a usable structured fix and routes to
+approval rather than silently escalating to FAILED with a wasted
+diagnosis — done, see Phase 15.3's verification.
 
 ## Phase 15.2 — ReAct debugging subgraph (tools + migration-guide RAG)
 
@@ -141,8 +165,9 @@ Tools, each a thin wrapper around code that already exists:
   tool).
 - `get_run_history(pipeline_id)` — wraps `state_store.get_events`/
   `get_all_pipelines`, already exists.
-- `propose_fix(ProposedFix)` — terminal action, reuses the Phase 15.1
-  schema.
+- `propose_fix(...)` — terminal action, reuses whatever `Diagnosis`'s
+  shape looks like by the time this is built (see Phase 15.1's actual
+  shipped shape above, not the original `ProposedFix` design).
 
 **Verify**: eval harness gets cases the single-shot LLM call gets wrong
 but the tool-using loop should get right (e.g. a failure whose real cause
@@ -151,37 +176,57 @@ guessable from the log alone); a real run against a deliberately
 novel/unpatterned failure shows the multi-turn trace in
 `record_event`-logged tool calls.
 
-## Phase 15.3 — Human-in-the-loop approval gate
+## Phase 15.3 — Human-in-the-loop approval gate ✅ built, AWS-only
 
-For anything below the auto-fix confidence threshold or explicitly
-`fix_type: "escalate"`, add a real approval gate instead of just writing
-`status=FAILED` and stopping:
+*Every* LLM diagnosis routes here now (see Phase 15.1's deviation — there's
+no confidence threshold below which this is skipped), not just failures
+below some threshold.
 
-- **Local**: LangGraph's `interrupt()` + a checkpointer
-  (`langgraph-checkpoint` is already a pinned dependency, unused —
-  `SqliteSaver` is the natural local choice). `cli.py` gets an
-  `approve --run-id <id> --approve/--reject [--fix-override ...]`
-  subcommand that resumes the interrupted graph.
-- **AWS**: Step Functions' native `waitForTaskToken` callback pattern —
-  `analyze_logs_handler.py`'s escalation path pauses at a new
-  `AwaitApproval` state holding a task token, and
-  `cli.py --target aws approve` (or a dashboard button, if Phase 14.7 is
-  done by then) calls `send_task_success` with the human's decision,
-  resuming the same execution rather than starting a new one.
+### What shipped (AWS)
+Step Functions' native `waitForTaskToken` service integration, as
+planned: `state_machine.json.tpl`'s new `AwaitApproval` state genuinely
+pauses the execution (not polling) until something external resumes it.
+`await_approval_handler.py` is invoked by that state - it doesn't
+complete the task itself, it just parks the task token plus the full
+orchestrator state in DynamoDB (the only channel available to hand a
+`waitForTaskToken` token to something outside that one Lambda
+invocation). `approve_run_handler.py` (`POST /runs/{run_id}/approve`,
+same API Gateway `start_run` already uses) is what a human actually
+calls, via a new Approve/Reject button in `dashboard/app.py`'s AWS mode
+(`render_approval_gate()`) — not a CLI command as originally planned.
+Approve applies the fix via `config_fix.py` (identical mechanism to a
+pattern-matcher auto-fix) and calls `send_task_success` with output
+shaped to flow into the *existing* `CheckRetry` loop, so the retry that
+follows is indistinguishable from an ordinary pattern-matcher-triggered
+retry. Reject calls `send_task_failure`, which the state machine's
+`Catch` on `AwaitApproval` routes through the same `REPORT`/`FAILED` path
+an unfixable pattern-matcher escalation already takes.
 
-Both paths reuse the exact same `ProposedFix` payload and the exact same
-resume-into-retry-loop logic — the local/AWS split here is a genuinely
-good demonstration of the same HITL pattern in two different execution
-substrates.
+### Deviation: no local mode
+The local LangGraph `interrupt()` + `SqliteSaver` checkpointer half was
+not built — `langgraph-checkpoint` remains an unused pinned dependency.
+Locally, an LLM diagnosis still just ends the run at status
+`AWAITING_APPROVAL` (a more accurate label than the old `FAILED`, but
+nothing acts on it - see `analyze_node.py`'s docstring). This was a
+deliberate scope cut when actually building this, not an oversight: the
+real motivating use case for this phase was specifically an AWS run
+approved through the dashboard, not local development. No `cli.py
+approve` subcommand exists either, for the same reason - approval is
+dashboard-only.
 
-**Verify**: a real local run interrupts and waits; `cli.py approve` with
-`--approve` resumes and completes; `--reject` resumes into escalation.
-Same for a real AWS execution via `--target aws`.
+**Verify**: a real AWS execution genuinely paused at `AwaitApproval` and
+resumed correctly on approval (target job re-ran with the fix applied,
+flowed through `CheckRetry` → validate → report → PR exactly like an
+ordinary retry) — not yet exercised end-to-end with a real seeded
+failure; infrastructure is deployed and unit-tested but this specific
+claim needs a real run to confirm. Local mode / `--reject` / CLI-based
+approval are not applicable (not built).
 
-## Phase 15.4 — Verified code-patch generation
+## Phase 15.4 — Verified code-patch generation ⬜ not started
 
-Extends `ProposedFix` with `fix_type: "code_patch"` and a `patch: str`
-(unified diff) field. A patch is never committed straight to the target
+Extends `Diagnosis`'s shipped shape (Phase 15.1) with a `fix_type:
+"code_patch"` classification and a `patch: str` (unified diff) field. A
+patch is never committed straight to the target
 branch — it's applied to a scratch worktree (mirroring how
 `workspace/runs/<run_id>/` local checkouts already work locally, or a
 throwaway EMR job with the patched entry script uploaded to a scratch S3
@@ -204,32 +249,42 @@ touches the real branch.
 
 ## Phase 15.5 — Self-improving pattern library + validation-diff triage
 
-Two independent, lower-risk additions:
+### ✅ Pattern library growth — built (narrower trigger than planned)
+`raise_pr_handler.py` checks whether a `PASSED` run's fix was
+human-*approved* through Phase 15.3's flow specifically (an
+`approved_llm_fix` flag `approve_run_handler.py` sets on the run's
+DynamoDB metadata) — narrower than the original "when a human resolves
+an escalation" wording, which could have included a human fixing things
+manually out-of-band with no structured `fix_key`/`fix_value` to work
+from. If the flag is set, it opens a *second* PR — against this repo
+(`upgrade-regression-test-agent`), not the pipeline repo the first PR
+targets — proposing the diagnosis + fix be added to
+`known_failure_patterns`. The regex itself is a verbatim `re.escape()` of
+the diagnosis text rather than LLM-drafted (simpler; the PR body
+explicitly flags this as needing human judgment on whether it's too
+narrow or too broad). Never auto-merged, same review discipline as any
+other change.
 
-- **Validation-diff triage**: when `validate_data`'s row/schema/column
-  checks fail, feed the diff summary + sample mismatched rows + this
-  run's applied fixes to the LLM and have it classify
-  `benign | regression` with reasoning, surfaced in the report
-  (`report_generator.py`). Pure annotation, never gates or acts — safe to
-  run fully autonomously from day one, no eval-harness gating needed
-  since it never controls flow.
-- **Pattern library growth**: when a human resolves an escalation (via
-  15.3's approval flow), an LLM drafts a candidate
-  `known_failure_patterns` entry (regex + `fix_config`) from the resolved
-  failure's log signature, written to a PR against the *manifest* file
-  itself for human review (reuses `github_client`, same review discipline
-  as a code change) — never auto-merged into the manifest. Once merged,
-  that failure class auto-fixes via the existing pattern-matcher path
-  forever after — the flywheel is the escalation count trending down over
-  successive runs, directly observable via `state_store.get_events`
-  across runs.
+### ⬜ Validation-diff triage — not built
+No change yet to how a failed `validate_data` result is reported; still
+just raw check results, no LLM classification of benign vs. regression.
 
 **Verify**: seed two similar-but-not-identical failures, confirm the
 first escalates and produces a draft pattern-library PR on human
 resolution, confirm the second (after that PR is merged) now auto-fixes
-via the ordinary pattern-matcher path with no LLM call at all.
+via the ordinary pattern-matcher path with no LLM call at all — not yet
+run; needs the same real seeded-failure end-to-end test Phase 15.3 is
+waiting on.
 
 ## Suggested build order and why
+
+*(Original plan, kept for reference — actual build order deviated: 15.1's
+structured fields, 15.3's AWS approval flow, and 15.5's pattern-library
+growth were built together in one session, ahead of the eval harness,
+since the immediate goal was demonstrating the human-in-the-loop
+mechanics end-to-end rather than following the strict dependency order
+below. The eval-harness gap this leaves is real — see Phase 15.0's
+status.)*
 
 15.0 (eval harness) must come first — it's the only thing that makes any
 later "this can be trusted to auto-apply" claim falsifiable rather than
@@ -237,8 +292,8 @@ asserted. 15.1 (structured output + confidence gating) is the smallest
 change that converts the LLM path from dead-end to load-bearing, and
 should ship before the more ambitious 15.2 (multi-turn tool use) so the
 single-shot baseline it's compared against in evals actually exists. 15.3
-(HITL) can be built in parallel with 15.2 once 15.1's `ProposedFix` schema
-exists, since escalation already needs *somewhere* to go. 15.4 (code
+(HITL) can be built in parallel with 15.2 once 15.1's structured fix
+fields exist, since escalation already needs *somewhere* to go. 15.4 (code
 patches) depends on 15.0/15.1/15.3 all existing since it's the highest
 blast-radius fix type. 15.5 is intentionally last and lowest-priority —
 both its pieces are pure value-adds with no dependency the rest of the
