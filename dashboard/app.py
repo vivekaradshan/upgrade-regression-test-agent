@@ -221,6 +221,17 @@ def render_approval_gate(run_id: str, metadata: dict) -> None:
     else:
         st.write("**No structured fix available** - this diagnosis can only be rejected, not applied.")
 
+    log_excerpt = analysis_result.get("log_excerpt")
+    if log_excerpt:
+        # Lets a reviewer sanity-check the diagnosis against what the LLM
+        # actually saw, rather than trusting its prose conclusion alone -
+        # a confidently-stated diagnosis can still be wrong (found via a
+        # real seeded failure where the model guessed "ANSI mode division
+        # by zero" at 0.85 confidence against a log that didn't contain
+        # that error at all).
+        with st.expander("Log evidence the LLM analyzed"):
+            st.code(log_excerpt, language="text")
+
     settings = Settings()
     col1, col2 = st.columns(2)
     if fix_config and col1.button("Approve & apply fix", key=f"approve-{run_id}"):

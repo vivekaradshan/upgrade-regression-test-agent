@@ -25,6 +25,7 @@ import json
 import os
 
 import boto3
+from botocore.exceptions import ClientError
 
 from src.aws_lambda.common import (
     get_github_client,
@@ -135,7 +136,7 @@ def handler(event: dict, context) -> dict:
     if target_execution.get("status") == "SUCCESS":
         local_state["target_execution"] = {**target_execution, "status": "SUCCEEDED"}
     else:
-        local_log_path = _download_and_decompress_stderr(
+        local_log_path = _download_and_decompress_driver_logs(
             application_id=event["emr_job"]["applicationId"],
             job_run_id=target_execution["jobRunId"],
         )
@@ -150,13 +151,43 @@ def handler(event: dict, context) -> dict:
     return merge_update(event, update)
 
 
-def _download_and_decompress_stderr(application_id: str, job_run_id: str) -> str:
-    key = f"{LOGS_PREFIX}/applications/{application_id}/jobs/{job_run_id}/SPARK_DRIVER/stderr.gz"
-    local_gz_path = f"/tmp/{job_run_id}-stderr.gz"
-    local_log_path = f"/tmp/{job_run_id}-stderr.log"
+def _download_and_decompress_driver_logs(application_id: str, job_run_id: str) -> str:
+    """Downloads both SPARK_DRIVER stdout and stderr, not stderr alone -
+    found via a real seeded failure (an IllegalArgumentException thrown
+    while Spark was still instantiating SessionStateBuilder, i.e. during
+    session/config setup rather than while running the pipeline's own
+    code) whose full Python traceback landed in stdout.gz, while
+    stderr.gz showed a completely clean shutdown (exitCode 0) with no
+    indication anything went wrong at all. Analyzing stderr alone gave
+    the LLM no real evidence to work with, and it confidently guessed a
+    plausible-sounding but wrong diagnosis instead of recognizing it had
+    nothing to go on. stdout is included first since that's where this
+    class of early-startup exception tends to land; LogReader.read_log's
+    truncation always keeps exception-bearing lines regardless of
+    position, so ordering doesn't affect what survives truncation."""
+    local_log_path = f"/tmp/{job_run_id}-driver.log"
 
-    s3.download_file(ARTIFACTS_BUCKET, key, local_gz_path)
-    with gzip.open(local_gz_path, "rt") as gz_file, open(local_log_path, "w") as out_file:
-        out_file.write(gz_file.read())
+    with open(local_log_path, "w") as out_file:
+        for stream in ("stdout", "stderr"):
+            content = _try_download_and_decompress(application_id, job_run_id, stream)
+            if content is not None:
+                out_file.write(f"===== SPARK_DRIVER {stream} =====\n")
+                out_file.write(content)
+                out_file.write("\n")
 
     return local_log_path
+
+
+def _try_download_and_decompress(application_id: str, job_run_id: str, stream: str) -> str | None:
+    key = f"{LOGS_PREFIX}/applications/{application_id}/jobs/{job_run_id}/SPARK_DRIVER/{stream}.gz"
+    local_gz_path = f"/tmp/{job_run_id}-{stream}.gz"
+
+    try:
+        s3.download_file(ARTIFACTS_BUCKET, key, local_gz_path)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+            return None
+        raise
+
+    with gzip.open(local_gz_path, "rt") as gz_file:
+        return gz_file.read()

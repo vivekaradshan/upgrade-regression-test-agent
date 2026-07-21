@@ -93,6 +93,14 @@ def _approve(state_store, run_id: str, task_token: str, pending_state: dict) -> 
     state_store.update_pipeline_status(
         run_id,
         manifest.pipeline.id,
+        # Without resetting this, the pipeline record's status field stays
+        # stuck at "AWAITING_APPROVAL" (set by analyze_node.py's
+        # AWAIT_APPROVAL branch) for the rest of the run's lifetime, even
+        # after the approved fix's retry succeeds and the run moves on to
+        # VALIDATE - found via a real approved run where the dashboard
+        # kept showing AWAITING_APPROVAL long after approval actually
+        # went through.
+        status="RUNNING",
         retry_count=new_retry_count,
         corrective_action=f"approved: set {fix_config['key']}={fix_config['value']}",
     )

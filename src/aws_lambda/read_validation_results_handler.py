@@ -41,7 +41,21 @@ def handler(event: dict, context) -> dict:
         event="validation_completed",
         overall_status=validation_results["overall_status"],
     )
-    state_store.update_run_status(run_id, phase="REPORT", overall_status=validation_results["overall_status"])
+    # status must be set here too, not just overall_status - found via a
+    # real completed run whose run-level status stayed stuck at "RUNNING"
+    # forever (the value init_run sets it to) because nothing on the
+    # success path ever updated it - only escalation paths ever wrote
+    # "FAILED"/"AWAITING_APPROVAL". overall_status alone isn't read by
+    # the dashboard's per-pipeline "Status" badge, only the run-level
+    # metric - status is what several other places (this project's own
+    # earlier runs, e.g. run-78b09d1271fa) actually rely on for "did this
+    # run finish and how".
+    state_store.update_run_status(
+        run_id,
+        phase="REPORT",
+        overall_status=validation_results["overall_status"],
+        status=validation_results["overall_status"],
+    )
 
     return merge_update(
         event,

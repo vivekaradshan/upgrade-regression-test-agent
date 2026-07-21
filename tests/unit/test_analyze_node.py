@@ -66,6 +66,10 @@ def test_llm_diagnosis_routes_to_await_approval_not_failed(manifest, state_store
         "value": "lz4_raw",
     }
     assert result["analysis_result"]["confidence"] == 0.9
+    # A human approving this needs to be able to check the diagnosis
+    # against real evidence, not just trust the prose - see
+    # dashboard/app.py's "Log evidence the LLM analyzed" expander.
+    assert "Codec [lz4raw] is not available" in result["analysis_result"]["log_excerpt"]
     github_client.update_file.assert_not_called()
 
     metadata = state_store.get_run_metadata("run-1")

@@ -324,7 +324,7 @@ class TestAnalyzeLogsHandler:
             patch.object(alh, "get_github_client", return_value=MagicMock()),
             patch.object(alh, "get_state_store", return_value=MagicMock()),
             patch.object(alh, "get_llm_analyzer", return_value=MagicMock()),
-            patch.object(alh, "_download_and_decompress_stderr", return_value="/tmp/log") as mock_download,
+            patch.object(alh, "_download_and_decompress_driver_logs", return_value="/tmp/log") as mock_download,
             patch.object(alh, "make_analyze_logs_node") as mock_make_node,
         ):
             mock_make_node.return_value = lambda state: {"phase": "REPORT"}
@@ -362,24 +362,57 @@ class TestAnalyzeLogsHandler:
         mock_s3.download_file.assert_not_called()
         assert result["analysis_result"]["source"] == "infrastructure"
 
-    def test_downloads_and_decompresses_stderr_log(self, tmp_path):
+    def test_downloads_and_decompresses_both_stdout_and_stderr(self, tmp_path):
+        """Some exceptions (found via a real seeded failure - an
+        IllegalArgumentException thrown during SparkSession setup) land
+        in stdout, not stderr - stderr can look like a totally clean run
+        while the real traceback is in stdout. Both streams must be
+        fetched and included."""
         from src.aws_lambda import analyze_logs_handler as alh
         import gzip
 
-        gz_content = b"ArithmeticException: divide by zero"
-        real_download_target = tmp_path / "downloaded.gz"
-        with gzip.open(real_download_target, "wb") as f:
-            f.write(gz_content)
+        def make_gz(tmp_path, name, content: bytes):
+            path = tmp_path / name
+            with gzip.open(path, "wb") as f:
+                f.write(content)
+            return path
+
+        stdout_gz = make_gz(tmp_path, "stdout.gz", b"IllegalArgumentException: Codec [lz4raw] is not available")
+        stderr_gz = make_gz(tmp_path, "stderr.gz", b"SparkContext is stopping with exitCode 0")
 
         def fake_download_file(bucket, key, local_path):
-            with open(real_download_target, "rb") as src, open(local_path, "wb") as dst:
+            source = stdout_gz if "stdout" in key else stderr_gz
+            with open(source, "rb") as src, open(local_path, "wb") as dst:
                 dst.write(src.read())
 
         with patch.object(alh, "s3") as mock_s3:
             mock_s3.download_file.side_effect = fake_download_file
-            local_path = alh._download_and_decompress_stderr("app-123", "job-456")
+            local_path = alh._download_and_decompress_driver_logs("app-123", "job-456")
 
-        assert "divide by zero" in open(local_path).read()
+        content = open(local_path).read()
+        assert "Codec [lz4raw] is not available" in content
+        assert "SparkContext is stopping with exitCode 0" in content
+
+    def test_missing_stdout_stream_does_not_fail_the_download(self, tmp_path):
+        from src.aws_lambda import analyze_logs_handler as alh
+        from botocore.exceptions import ClientError
+        import gzip
+
+        stderr_gz = tmp_path / "stderr.gz"
+        with gzip.open(stderr_gz, "wb") as f:
+            f.write(b"some real error")
+
+        def fake_download_file(bucket, key, local_path):
+            if "stdout" in key:
+                raise ClientError({"Error": {"Code": "404"}}, "GetObject")
+            with open(stderr_gz, "rb") as src, open(local_path, "wb") as dst:
+                dst.write(src.read())
+
+        with patch.object(alh, "s3") as mock_s3:
+            mock_s3.download_file.side_effect = fake_download_file
+            local_path = alh._download_and_decompress_driver_logs("app-123", "job-456")
+
+        assert "some real error" in open(local_path).read()
 
 
 class TestGenerateReportHandler:

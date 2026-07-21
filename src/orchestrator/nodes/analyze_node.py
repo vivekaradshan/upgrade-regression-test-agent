@@ -79,6 +79,15 @@ def make_analyze_logs_node(
                 ),
                 "confidence": diagnosis.confidence,
                 "is_mitigation": diagnosis.is_mitigation,
+                # A human approving this fix has no way to sanity-check the
+                # LLM's diagnosis against real evidence without this - found
+                # the hard way: a diagnosis can be stated confidently while
+                # being wrong, and a reviewer can only catch that by seeing
+                # what the model actually saw, not just its prose
+                # conclusion. Truncated well below LogReader's own 500KB
+                # cap - this only needs to be human-skimmable in the
+                # approval UI, not the full log the LLM was given.
+                "log_excerpt": log_content[:3000],
             }
             # Recorded on the append-only event log (not a current-state
             # field) since a run can call the LLM multiple times across

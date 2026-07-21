@@ -48,7 +48,15 @@ def make_validate_data_node(state_store: StateStore):
         state_store.record_event(
             run_id, phase="VALIDATE", event="validation_completed", overall_status=report.overall_status
         )
-        state_store.update_run_status(run_id, phase="REPORT", overall_status=report.overall_status)
+        # status must be set here too, not just overall_status - the
+        # run-level status field is otherwise never updated on a success
+        # path (only escalation paths ever write "FAILED"), so it stays
+        # stuck at init_run's initial "RUNNING" value forever - a
+        # pre-existing bug found via a real completed AWS run, fixed here
+        # too since this is the same shared-shape update on the local path.
+        state_store.update_run_status(
+            run_id, phase="REPORT", overall_status=report.overall_status, status=report.overall_status
+        )
 
         return {
             "validation_results": validation_results,
