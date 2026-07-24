@@ -4,10 +4,15 @@
 
 Phases 15.0 (tracing half only), 15.1 (simplified), 15.3 (AWS-only), and
 15.5 (pattern-library-growth half only) are built and deployed against
-real AWS — not yet exercised through a real seeded end-to-end run.
-Phases 15.2 and 15.4 are not started. See "Deviations from the original
-plan" below each built phase for exactly what shipped differently than
-originally designed here, and why.
+real AWS, and have now been exercised through real seeded end-to-end
+runs - which surfaced and fixed three real bugs (analyze_logs_handler.py
+only fetching stderr and missing exceptions that land in stdout, no way
+for a human to check an LLM diagnosis against real log evidence before
+approving, and the pipeline-level `status` field never being updated on
+any success path anywhere in the codebase - see git history around
+commit `3e16472`). Phases 15.2 and 15.4 are not started. See "Deviations
+from the original plan" below each built phase for exactly what shipped
+differently than originally designed here, and why.
 
 Depends on Step 14 (AWS production deployment) being complete first —
 see [`docs/aws-deployment-plan.md`](aws-deployment-plan.md) for that
@@ -15,6 +20,62 @@ status. This document expands on several items already listed in the
 main [README](../README.md)'s Future Enhancements section (HITL
 approval, self-improving pattern library, mitigation vs. remediation
 labeling) into a concrete, phased build plan.
+
+## Consolidated open items, in build order
+
+Decided this session: real LLM observability is now in scope, via
+**LangSmith** (not Langfuse - Langfuse is free but self-hosted, requiring
+a new Postgres + server to run and pay for, the same infra-cost tradeoff
+that already ruled out App Runner/ECS Express Mode for the dashboard;
+LangSmith is SaaS with a free tier, zero new AWS infrastructure).
+DynamoDB's existing event-log tracking (`llm_call`, `awaiting_approval`,
+`approval_approved`/`approval_rejected` events) is retained as-is, not
+replaced - LangSmith adds call-level tracing/cost/latency visualization
+on top of it, not a substitute for the run's own audit trail.
+
+1. **Wire LangSmith into the existing single-shot `LLMAnalyzer.analyze()`
+   call first**, before anything else - smallest possible surface to
+   prove the integration works, and it retroactively gives real tracing
+   to everything already built (15.0/15.1/15.3) immediately, rather than
+   needing to be retrofitted into a more complex loop later.
+2. **Eval harness** (the still-missing half of Phase 15.0) - built after
+   observability is wired in, not before, so eval runs are traced too
+   from day one.
+3. **Phase 15.2, ReAct debugging loop** - `grep_log`, `read_file`,
+   `get_run_history`, `propose_fix`, plus a `search_web` tool (via
+   Tavily - a real addition beyond this document's original
+   `search_migration_guide` RAG-over-local-corpus design, see Phase
+   15.2's section below), triggered by a human rejecting a proposed fix
+   with feedback text instead of just terminally rejecting it. Needs a
+   state machine change: `AwaitApproval`'s `Next` is currently hardcoded
+   to `CheckRetry`; it needs to become a `Choice` reading the resumed
+   `phase` (`RETRY` → `CheckRetry`, `AWAIT_APPROVAL` → loop back to
+   `AwaitApproval` with a new proposal, `REPORT` → `GenerateReport`).
+4. **CloudWatch alarm on `AWAIT_APPROVAL`** - reuses the SNS topic Phase
+   14.6 already built for execution failures; actively notifies when a
+   run needs human review instead of requiring the dashboard to be
+   polled. Cheap, independent, can build anytime.
+5. **Dashboard "AI Decision Timeline"** - a read-only view joining the
+   existing `llm_call`/`awaiting_approval`/`approval_*` DynamoDB events
+   (via `state_store.get_events()`) into one chronological per-run
+   timeline. No new instrumentation needed, purely presentation.
+   Independent, can build anytime.
+6. **A genuine, complete Test A run** - an LLM (now via the ReAct loop)
+   proposes a real fix, a human clicks Approve in the dashboard, EMR
+   actually re-executes with the fix applied, validation passes. Never
+   cleanly finished during this session's testing - the codec scenario
+   used to test this accidentally became a legitimate "no fix available"
+   case (see Phase 15.2/15.3's notes on the real stdout/stderr bug this
+   surfaced), and a follow-up attempt using the real ANSI failure got
+   interrupted by the status-field bug hunt. `main` on the demo pipeline
+   repo has been reset to the 3.5.4 baseline and is ready for this.
+7. **Step 14.9** - final end-to-end validation + real cost check +
+   cleanup, folded into the same run as item 6 rather than a separate one.
+8. **Phase 15.5's remaining half** (validation-diff triage) and **Phase
+   15.4** (verified code-patch generation) - both independent,
+   lower-priority, order between them doesn't matter.
+9. **Phase 14.8 (CI/CD)** - already deprioritized (see
+   `docs/aws-deployment-plan.md`); stays last, optional.
 
 ## Context
 
@@ -99,6 +160,21 @@ corpus.
 possible — harness doesn't exist); a real run's report shows token/cost
 figures for any LLM call it made (done — see above).
 
+### ⬜ Real LLM observability (LangSmith) — decided, not yet wired in
+DynamoDB's own event-log tracking above is retained as the run's audit
+trail — this doesn't replace it, it adds call-level tracing, latency, and
+cost visualization on top via a dedicated LLM observability platform.
+**LangSmith** chosen over Langfuse: Langfuse is free but self-hosted
+(a new Postgres + server to run and pay for — the same infra-cost
+tradeoff that already ruled out App Runner/ECS Express Mode for the
+dashboard, see `docs/aws-deployment-plan.md`); LangSmith is SaaS with a
+free tier, zero new AWS infrastructure. `LANGSMITH_API_KEY`/
+`LANGSMITH_TRACING`/`LANGSMITH_PROJECT` placeholders are in `.env`/
+`.env.example`. Sequencing: wire into the existing single-shot
+`LLMAnalyzer.analyze()` call first (smallest surface, proves the
+integration, retroactively traces everything already built) before the
+eval harness or Phase 15.2's ReAct loop are built on top of it.
+
 ## Phase 15.1 — Structured fix output ✅ built (simplified — no auto-apply)
 
 ### What shipped
@@ -163,6 +239,18 @@ Tools, each a thin wrapper around code that already exists:
   matches the project's "no dependency until you need it" pattern, e.g.
   how `pyyaml_pyfiles` was hand-packaged rather than adding a build
   tool).
+- `search_web(query)` — **added beyond the original design** (decided
+  this session, not in the initial plan): the three tools above only let
+  the model dig into things this project already has - its own log, its
+  own repo, its own history. For a genuinely novel failure not covered by
+  the manifest's documented breaking changes, none of them can find out
+  *why* Spark actually changed or how others fixed the same thing - a
+  real ceiling a human engineer wouldn't have. Uses Tavily (API key
+  placeholder in `.env`/`.env.example`) rather than a raw scraper.
+  Doesn't change the safety story at all - whatever `propose_fix` returns,
+  web-sourced or not, still goes through the same human-approval gate and
+  empirical re-execution before it can land; web content is treated as
+  untrusted data for the model to reason about, not instructions.
 - `get_run_history(pipeline_id)` — wraps `state_store.get_events`/
   `get_all_pipelines`, already exists.
 - `propose_fix(...)` — terminal action, reuses whatever `Diagnosis`'s
