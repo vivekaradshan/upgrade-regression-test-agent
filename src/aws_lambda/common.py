@@ -43,6 +43,24 @@ def get_openai_api_key() -> str:
     return _get_secret(os.environ["OPENAI_API_KEY_SECRET_ID"])
 
 
+def configure_react_loop_secrets() -> None:
+    """react_tools.py's search_web tool and langsmith's tracing both read
+    credentials straight from os.environ (they're not passed as
+    constructor args anywhere else in this codebase) - only analyze_logs
+    calls this, since it's the only Lambda that ever runs the ReAct loop.
+    A missing TAVILY_API_KEY_SECRET_ID env var (not yet deployed to a
+    given Lambda) is treated as "search_web unavailable" rather than a
+    hard failure, matching react_tools.search_web's own missing-key
+    handling."""
+    tavily_secret_id = os.environ.get("TAVILY_API_KEY_SECRET_ID")
+    if tavily_secret_id:
+        os.environ["TAVILY_API_KEY"] = _get_secret(tavily_secret_id)
+
+    langsmith_secret_id = os.environ.get("LANGSMITH_API_KEY_SECRET_ID")
+    if langsmith_secret_id:
+        os.environ["LANGSMITH_API_KEY"] = _get_secret(langsmith_secret_id)
+
+
 def get_state_store() -> StateStore:
     factory = AWSClientFactory(use_mocks=False)
     return StateStore(factory.get_dynamodb_resource())

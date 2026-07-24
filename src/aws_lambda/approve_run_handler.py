@@ -3,12 +3,27 @@ the human decision point for an LLM-proposed fix (see analyze_node.py's
 AWAIT_APPROVAL branch and await_approval_handler.py, which parked the
 Step Functions execution's task token in DynamoDB waiting for this).
 
+Three possible decisions, all sent as {"action": "approve"|"reject"|
+"retry_with_human_fix"}:
+
 Approve: commits the LLM's proposed {key, value} fix to the target
 branch (the exact same apply_fix_to_target_branch() call a pattern-
 matcher auto-fix uses - see src/tools/config_fix.py), bumps retry_count,
 and resumes the paused execution via states:SendTaskSuccess with output
 shaped to flow into the existing CheckRetry -> ... retry loop, same as
 any other retry.
+
+Retry with human fix: for a diagnosis with no structured fix_config
+(most real code-level fixes don't collapse into one key/value pair,
+unlike every fix type this system can author itself) - the human has
+already committed their own fix directly to the same target branch this
+run already created and scoped to itself, so there's nothing to apply
+here. Just bumps retry_count and resumes, identical to approve() minus
+the apply_fix_to_target_branch() call. The fix isn't taken on faith any
+more than an LLM's is: it goes through the exact same re-execute +
+validate empirical loop either way, capped by the same
+manifest-configured max_retries - a fix that doesn't actually work fails
+again for real, same as a bad LLM fix would.
 
 Reject: resumes via states:SendTaskFailure, which the state machine's
 Catch on the AwaitApproval state routes to the same REPORT/FAILED path
@@ -30,6 +45,8 @@ from src.tools.config_fix import apply_fix_to_target_branch, find_spark_config_f
 
 sfn = boto3.client("stepfunctions")
 
+_VALID_ACTIONS = ("approve", "reject", "retry_with_human_fix")
+
 
 def handler(event: dict, context) -> dict:
     run_id = (event.get("pathParameters") or {}).get("run_id")
@@ -38,8 +55,13 @@ def handler(event: dict, context) -> dict:
 
     try:
         body = json.loads(event.get("body") or "{}")
-        approved = bool(body["approved"])
-    except (json.JSONDecodeError, KeyError) as e:
+        action = body.get("action")
+        if action is None:
+            # Back-compat with the original two-outcome {"approved": bool} shape.
+            action = "approve" if bool(body["approved"]) else "reject"
+        if action not in _VALID_ACTIONS:
+            raise ValueError(f"action must be one of {_VALID_ACTIONS}, got {action!r}")
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
         return _response(400, {"error": f"invalid request body: {e}"})
 
     state_store = get_state_store()
@@ -55,8 +77,10 @@ def handler(event: dict, context) -> dict:
 
     pending_state = json.loads(pending_state_json)
 
-    if approved:
+    if action == "approve":
         return _approve(state_store, run_id, task_token, pending_state)
+    if action == "retry_with_human_fix":
+        return _retry_with_human_fix(state_store, run_id, task_token, pending_state)
     return _reject(state_store, run_id, task_token, pending_state)
 
 
@@ -121,6 +145,39 @@ def _approve(state_store, run_id: str, task_token: str, pending_state: dict) -> 
     )
 
     return _response(200, {"run_id": run_id, "status": "approved", "retry_count": new_retry_count})
+
+
+def _retry_with_human_fix(state_store, run_id: str, task_token: str, pending_state: dict) -> dict:
+    manifest = TestManifest.model_validate(pending_state["manifest"])
+    new_retry_count = pending_state["retry_count"] + 1
+    resume_state = {**pending_state, "retry_count": new_retry_count, "phase": "RETRY"}
+
+    sfn.send_task_success(taskToken=task_token, output=json.dumps(resume_state))
+
+    state_store.update_pipeline_status(
+        run_id,
+        manifest.pipeline.id,
+        # Same reset as _approve() - without it the pipeline record stays
+        # stuck showing AWAITING_APPROVAL even after this retry succeeds.
+        status="RUNNING",
+        retry_count=new_retry_count,
+        corrective_action="human-provided fix pushed directly to the target branch",
+    )
+    state_store.record_event(run_id, phase="ANALYZE", event="retry_with_human_fix", retry_count=new_retry_count)
+    # Deliberately does NOT set approved_llm_fix - raise_pr_handler.py's
+    # pattern-library-growth trigger (Phase 15.5) is keyed off an LLM
+    # diagnosis + fix_config that led to a pass; a human-authored code fix
+    # has neither, so it's out of scope for that flywheel by design, not
+    # an oversight.
+    state_store.update_run_status(
+        run_id,
+        phase="EXECUTE",
+        status="RUNNING",
+        pending_approval_task_token=None,
+        pending_approval_state=None,
+    )
+
+    return _response(200, {"run_id": run_id, "status": "retrying_with_human_fix", "retry_count": new_retry_count})
 
 
 def _reject(state_store, run_id: str, task_token: str, pending_state: dict) -> dict:

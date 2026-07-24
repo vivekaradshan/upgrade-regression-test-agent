@@ -166,6 +166,24 @@ resource "aws_secretsmanager_secret_version" "openai_api_key" {
   secret_string = var.openai_api_key
 }
 
+resource "aws_secretsmanager_secret" "tavily_api_key" {
+  name = "${var.project_name}/tavily-api-key"
+}
+
+resource "aws_secretsmanager_secret_version" "tavily_api_key" {
+  secret_id     = aws_secretsmanager_secret.tavily_api_key.id
+  secret_string = var.tavily_api_key
+}
+
+resource "aws_secretsmanager_secret" "langsmith_api_key" {
+  name = "${var.project_name}/langsmith-api-key"
+}
+
+resource "aws_secretsmanager_secret_version" "langsmith_api_key" {
+  secret_id     = aws_secretsmanager_secret.langsmith_api_key.id
+  secret_string = var.langsmith_api_key
+}
+
 # --- Phase 14.2: EMR Serverless ---
 
 resource "aws_iam_role" "emr_serverless_execution" {

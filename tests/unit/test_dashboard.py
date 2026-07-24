@@ -5,7 +5,13 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "dashboard"))
 
-from app import badge, format_duration, load_aws_snapshots, load_snapshots  # noqa: E402
+from app import (  # noqa: E402
+    _TIMELINE_EVENT_LABELS,
+    badge,
+    format_duration,
+    load_aws_snapshots,
+    load_snapshots,
+)
 
 
 def test_badge_maps_known_statuses_to_icons():
@@ -76,3 +82,36 @@ def test_load_aws_snapshots_builds_same_shape_from_state_store():
     assert snapshots["run-aws-1"]["metadata"]["overall_status"] == "RUNNING"
     assert snapshots["run-aws-1"]["pipelines"][0]["pipeline_id"] == "customer-transactions"
     mock_state_store.get_all_pipelines.assert_called_once_with("run-aws-1")
+
+
+def test_load_aws_snapshots_includes_events_for_ai_decision_timeline():
+    mock_state_store = MagicMock()
+    mock_state_store.list_runs.return_value = [{"run_id": "run-aws-1"}]
+    mock_state_store.get_all_pipelines.return_value = []
+    mock_state_store.get_events.return_value = [{"event": "llm_call", "model": "gpt-4o-mini"}]
+
+    snapshots = load_aws_snapshots(mock_state_store)
+
+    assert snapshots["run-aws-1"]["events"] == [{"event": "llm_call", "model": "gpt-4o-mini"}]
+    mock_state_store.get_events.assert_called_once_with("run-aws-1")
+
+
+def test_timeline_labels_cover_every_event_the_analyze_and_approval_paths_record():
+    # analyze_node.py, react_loop.py's tools, and approve_run_handler.py
+    # are the three places that record ANALYZE-phase events - if one of
+    # them starts emitting a new event name, this catches that the
+    # timeline silently wouldn't show it.
+    expected_events = {
+        "failure_analyzed",
+        "llm_call",
+        "react_loop_started",
+        "tool_call",
+        "react_loop_finished",
+        "auto_fix_applied",
+        "awaiting_approval",
+        "approval_approved",
+        "retry_with_human_fix",
+        "approval_rejected",
+        "escalated",
+    }
+    assert set(_TIMELINE_EVENT_LABELS.keys()) == expected_events

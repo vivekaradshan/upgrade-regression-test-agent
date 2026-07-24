@@ -1,0 +1,16 @@
+26/07/05 23:24:53 WARN NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+26/07/05 23:24:54 INFO SparkContext: Running Spark version 4.0.0
+26/07/05 23:24:55 ERROR SparkContext: Error initializing SparkContext.
+java.lang.NoClassDefFoundError: javax/servlet/Filter
+	at org.sparkproject.jetty.servlet.ServletContextHandler.<init>(ServletContextHandler.java:167)
+	at org.apache.spark.ui.JettyUtils$.createServletContextHandler(JettyUtils.scala:352)
+	at org.apache.spark.ui.WebUI.attachHandler(WebUI.scala:97)
+	at org.apache.spark.SparkContext.<init>(SparkContext.scala:497)
+Caused by: java.lang.ClassNotFoundException: javax.servlet.Filter
+	at java.base/jdk.internal.loader.BuiltinClassLoader.loadClass(BuiltinClassLoader.java:641)
+	at java.base/jdk.internal.loader.ClassLoaders$AppClassLoader.loadClass(ClassLoaders.java:188)
+	at java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:526)
+	... 4 more
+26/07/05 23:24:55 ERROR SparkContext: Error stopping SparkContext after init error.
+Exception in thread "main" java.lang.NoClassDefFoundError: javax/servlet/Filter
+exitCode: 1

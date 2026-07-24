@@ -9,3 +9,5 @@ openai
 structlog
 jinja2
 python-dotenv
+langsmith
+tavily-python

@@ -1,0 +1,10 @@
+26/07/05 23:24:53 WARN NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+26/07/05 23:24:54 INFO SparkContext: Running Spark version 4.0.0
+26/07/05 23:24:55 INFO SparkContext: Submitted application: customer-transactions-pipeline
+Traceback (most recent call last):
+  File "/workspace/customer-transactions-pipeline/pipeline/spark_job.py", line 51, in <module>
+    region = config["regionn"]
+              ~~~~~~^^^^^^^^^^
+KeyError: 'regionn'
+26/07/05 23:24:56 INFO SparkContext: Invoking stop() from shutdown hook
+exitCode: 1

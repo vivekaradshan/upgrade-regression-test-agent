@@ -12,6 +12,7 @@ reports/
 .env
 *.log
 !tests/fixtures/*.log
+!tests/evals/fixtures/*.log
 
 # Terraform
 **/.terraform/

@@ -22,7 +22,7 @@ PYTHON_DIR="$LAYER_DIR/python"
 rm -rf "$LAYER_DIR"
 mkdir -p "$PYTHON_DIR"
 
-pip install \
+python3 -m pip install \
   --platform manylinux2014_x86_64 \
   --python-version 3.12 \
   --implementation cp \

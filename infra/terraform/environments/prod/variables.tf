@@ -33,3 +33,15 @@ variable "openai_api_key" {
   type        = string
   sensitive   = true
 }
+
+variable "tavily_api_key" {
+  description = "Tavily API key for the ReAct loop's search_web tool (Phase 15.2) - passed via TF_VAR_tavily_api_key, never written to a file"
+  type        = string
+  sensitive   = true
+}
+
+variable "langsmith_api_key" {
+  description = "LangSmith API key for LLM call tracing (Phase 15.0) - passed via TF_VAR_langsmith_api_key, never written to a file"
+  type        = string
+  sensitive   = true
+}

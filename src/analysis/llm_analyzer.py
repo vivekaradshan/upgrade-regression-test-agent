@@ -8,10 +8,22 @@ anticipated.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from openai import OpenAI
+
+try:
+    # Optional: only present if LANGSMITH_API_KEY is set (see .env.example).
+    # traceable() is a no-op decorator when tracing isn't configured, so
+    # this import is safe even with no LangSmith account at all.
+    from langsmith import traceable
+except ImportError:  # pragma: no cover - langsmith is a pinned dependency
+    def traceable(*args, **kwargs):
+        def _decorator(fn):
+            return fn
+
+        return _decorator if not (args and callable(args[0])) else args[0]
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -48,6 +60,12 @@ class Diagnosis:
     # mode rather than fixing the arithmetic) - surfaced in the approval UI
     # and PR body so a human reviewer knows which one they're approving.
     is_mitigation: bool = False
+    # Names of tools the ReAct loop (src/analysis/react_loop.py) called
+    # before reaching this diagnosis, e.g. ["grep_log", "read_file"] -
+    # empty for a plain single-shot analyze() call. Surfaced in the
+    # approval UI so a reviewer knows how much investigation actually
+    # backs a given confidence score.
+    tools_used: list[str] = field(default_factory=list)
 
 
 class LLMAnalyzer:
@@ -68,6 +86,7 @@ class LLMAnalyzer:
         else:
             self._client = None
 
+    @traceable(name="llm_analyzer.analyze", run_type="chain")
     def analyze(self, log_content: str, upgrade_context: dict) -> Diagnosis:
         if self._client is None:
             return Diagnosis(

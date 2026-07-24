@@ -162,6 +162,11 @@ class StateStore:
             "run_id": run_id,
             "metadata": self.get_run_metadata(run_id),
             "pipelines": self.get_all_pipelines(run_id),
+            # Powers the dashboard's "AI Decision Timeline" - the audit
+            # log already has everything it needs (llm_call, tool_call,
+            # react_loop_*, awaiting_approval, approval_approved/rejected),
+            # this just makes it visible to the dashboard's process too.
+            "events": self.get_events(run_id),
         }
 
         snapshot_path = Path(path)

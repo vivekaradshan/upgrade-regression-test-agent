@@ -28,11 +28,14 @@ import boto3
 from botocore.exceptions import ClientError
 
 from src.aws_lambda.common import (
+    configure_react_loop_secrets,
     get_github_client,
     get_llm_analyzer,
     get_state_store,
     merge_update,
 )
+
+configure_react_loop_secrets()
 from src.orchestrator.nodes.analyze_node import make_analyze_logs_node
 
 s3 = boto3.client("s3")

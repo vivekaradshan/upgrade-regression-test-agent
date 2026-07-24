@@ -26,16 +26,42 @@ from __future__ import annotations
 from src.analysis.llm_analyzer import LLMAnalyzer
 from src.analysis.log_reader import LogReader
 from src.analysis.pattern_matcher import PatternMatcher
+from src.analysis.react_loop import ReactAnalyzer
 from src.config.manifest import TestManifest
 from src.orchestrator.state import UpgradeTestState
 from src.tools.config_fix import apply_fix_to_target_branch, find_spark_config_file
 from src.tools.github_client import GitHubClient
 from src.tools.state_store import StateStore
 
+# Below this confidence (or an explicit "escalate"), a single-shot LLM
+# diagnosis is treated as inconclusive and handed to the ReAct loop for a
+# second, tool-using pass before falling back to human escalation - see
+# docs/agentic-llm-plan.md Phase 15.2.
+REACT_LOOP_CONFIDENCE_THRESHOLD = 0.5
+
 
 def make_analyze_logs_node(
-    github_client: GitHubClient, state_store: StateStore, llm_analyzer: LLMAnalyzer
+    github_client: GitHubClient,
+    state_store: StateStore,
+    llm_analyzer: LLMAnalyzer,
+    react_analyzer: ReactAnalyzer | None = None,
 ):
+    # react_analyzer is injectable for tests (a MagicMock llm_analyzer has
+    # no real ._client, so building one from it would try to run the real
+    # tool-calling loop against mock objects). In production, reuse
+    # llm_analyzer's own OpenAI client/model/migration_notes rather than
+    # constructing a second one - this only ever runs after a single-shot
+    # analyze() call already happened on the same client.
+    if react_analyzer is None:
+        react_analyzer = ReactAnalyzer(
+            api_key="",
+            client=llm_analyzer._client,
+            model=llm_analyzer.model,
+            migration_notes=llm_analyzer.migration_notes,
+            github_client=github_client,
+            state_store=state_store,
+        )
+
     def analyze_logs(state: UpgradeTestState) -> dict:
         manifest = TestManifest.model_validate(state["manifest"])
         run_id = state["run_id"]
@@ -57,13 +83,37 @@ def make_analyze_logs_node(
                 "fix_config": match.fix_config,
             }
         else:
-            diagnosis = llm_analyzer.analyze(
-                log_content,
-                {
-                    "baseline_spark_version": manifest.execution.baseline_spark_version,
-                    "target_spark_version": manifest.execution.target_spark_version,
-                },
-            )
+            upgrade_context = {
+                "baseline_spark_version": manifest.execution.baseline_spark_version,
+                "target_spark_version": manifest.execution.target_spark_version,
+            }
+            diagnosis = llm_analyzer.analyze(log_content, upgrade_context)
+
+            # A single-shot call that came back unsure isn't the end of
+            # the road - give the model tools to go dig for more evidence
+            # (Phase 15.2) before falling back to human escalation. This
+            # never changes the safety story: the result still always
+            # routes through the same AWAIT_APPROVAL gate below.
+            if diagnosis.classification == "escalate" or diagnosis.confidence < REACT_LOOP_CONFIDENCE_THRESHOLD:
+                state_store.record_event(
+                    run_id, phase="ANALYZE", event="react_loop_started", trigger_confidence=diagnosis.confidence
+                )
+                diagnosis = react_analyzer.analyze(
+                    log_content,
+                    upgrade_context,
+                    run_id=run_id,
+                    target_branch=state["target_branch"],
+                    pipeline_id=manifest.pipeline.id,
+                    single_shot_root_cause=diagnosis.root_cause,
+                )
+                state_store.record_event(
+                    run_id,
+                    phase="ANALYZE",
+                    event="react_loop_finished",
+                    tools_used=diagnosis.tools_used,
+                    final_confidence=diagnosis.confidence,
+                )
+
             analysis_result = {
                 "source": "llm",
                 "diagnosis": diagnosis.root_cause,
@@ -79,6 +129,7 @@ def make_analyze_logs_node(
                 ),
                 "confidence": diagnosis.confidence,
                 "is_mitigation": diagnosis.is_mitigation,
+                "tools_used": diagnosis.tools_used,
                 # A human approving this fix has no way to sanity-check the
                 # LLM's diagnosis against real evidence without this - found
                 # the hard way: a diagnosis can be stated confidently while

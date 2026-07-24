@@ -82,6 +82,7 @@ def load_aws_snapshots(state_store: StateStore) -> dict[str, dict]:
             "run_id": run_id,
             "metadata": run,
             "pipelines": state_store.get_all_pipelines(run_id),
+            "events": state_store.get_events(run_id),
         }
     return snapshots
 
@@ -111,9 +112,72 @@ def format_duration(created_at: str, updated_at: str) -> str:
     return str(end - start).split(".")[0]
 
 
+# Events not directly relevant to "what did the AI decide and why" (e.g.
+# generic phase transitions from other nodes) are left out of the
+# timeline - human-readable label + which fields from record_event's
+# **details to show, in display order.
+_TIMELINE_EVENT_LABELS = {
+    "failure_analyzed": "🔎 Failure analyzed",
+    "llm_call": "🤖 LLM call",
+    "react_loop_started": "🔁 Investigation started (single-shot was inconclusive)",
+    "tool_call": "🛠️ Tool call",
+    "react_loop_finished": "✅ Investigation finished",
+    "auto_fix_applied": "⚡ Auto-fix applied (pattern matcher)",
+    "awaiting_approval": "🟠 Awaiting human approval",
+    "approval_approved": "✅ Human approved",
+    "retry_with_human_fix": "🧑‍💻 Human pushed their own fix",
+    "approval_rejected": "❌ Human rejected",
+    "escalated": "🚨 Escalated (no fix applied)",
+}
+
+
+def render_ai_decision_timeline(events: list[dict]) -> None:
+    """Phase 15's "AI Decision Timeline" - every LLM call, tool call, and
+    human decision for this run, in order. Pure read of the existing
+    audit log (record_event calls already made by analyze_node.py,
+    react_loop.py's tools, and approve_run_handler.py) - no new
+    instrumentation, just a view onto data that already exists."""
+    relevant = [e for e in events if e.get("event") in _TIMELINE_EVENT_LABELS]
+    if not relevant:
+        return
+
+    with st.expander("AI Decision Timeline", expanded=False):
+        for event in relevant:
+            label = _TIMELINE_EVENT_LABELS[event["event"]]
+            timestamp = event.get("timestamp", "")
+            st.markdown(f"**{label}**  \n<span style='color:gray'>{timestamp}</span>", unsafe_allow_html=True)
+
+            if event["event"] == "tool_call":
+                st.write(f"`{event.get('tool')}({event.get('args')})` → {event.get('result_summary')}")
+            elif event["event"] == "llm_call":
+                st.write(
+                    f"model={event.get('model')} · prompt_tokens={event.get('prompt_tokens')} · "
+                    f"completion_tokens={event.get('completion_tokens')} · "
+                    f"cost=${event.get('estimated_cost_usd', 0):.6f}"
+                )
+            elif event["event"] == "react_loop_started":
+                st.write(f"trigger confidence: {event.get('trigger_confidence')}")
+            elif event["event"] == "react_loop_finished":
+                st.write(f"tools used: {event.get('tools_used')} · final confidence: {event.get('final_confidence')}")
+            elif event["event"] == "auto_fix_applied":
+                st.write(f"set `{event.get('fix_key')} = {event.get('fix_value')}`")
+            elif event["event"] == "approval_approved":
+                st.write(f"applied `{event.get('fix_key')} = {event.get('fix_value')}`")
+            elif event["event"] == "retry_with_human_fix":
+                st.write(f"retry_count: {event.get('retry_count')}")
+            elif event["event"] in ("failure_analyzed", "escalated"):
+                detail = event.get("diagnosis") or event.get("reason")
+                if detail:
+                    st.write(detail)
+            elif event["event"] == "awaiting_approval":
+                st.write(f"confidence: {event.get('confidence')}")
+            st.divider()
+
+
 def render(run_id: str, snapshot: dict) -> None:
     metadata = snapshot.get("metadata", {})
     pipelines = snapshot.get("pipelines", [])
+    events = snapshot.get("events", [])
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Overall status", metadata.get("overall_status", "UNKNOWN"))
@@ -140,6 +204,8 @@ def render(run_id: str, snapshot: dict) -> None:
 
     if MODE == "aws" and metadata.get("pending_approval_task_token"):
         render_approval_gate(run_id, metadata)
+
+    render_ai_decision_timeline(events)
 
     st.subheader("Pipeline status")
 
@@ -216,10 +282,16 @@ def render_approval_gate(run_id: str, metadata: dict) -> None:
     if analysis_result.get("is_mitigation"):
         st.write("**Note:** this is a mitigation (works around the new Spark version's behavior), not a fix that adapts the pipeline to it.")
 
+    target_branch = pending_state.get("target_branch", "?")
     if fix_config:
         st.write(f"**Proposed fix:** set `{fix_config['key']} = {fix_config['value']}` on the target branch, then retry.")
     else:
-        st.write("**No structured fix available** - this diagnosis can only be rejected, not applied.")
+        st.write(
+            "**No structured fix available** - most real code-level fixes don't collapse into one config "
+            f"key/value pair. Push a fix directly to `{target_branch}` in GitHub yourself, then use "
+            "\"Retry with my fix\" below - it goes through the same re-execute + validate empirical loop "
+            "any other fix does, it just skips applying anything since you already committed it."
+        )
 
     log_excerpt = analysis_result.get("log_excerpt")
     if log_excerpt:
@@ -233,19 +305,21 @@ def render_approval_gate(run_id: str, metadata: dict) -> None:
             st.code(log_excerpt, language="text")
 
     settings = Settings()
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     if fix_config and col1.button("Approve & apply fix", key=f"approve-{run_id}"):
-        _submit_approval(run_id, settings, approved=True)
-    if col2.button("Reject", key=f"reject-{run_id}"):
-        _submit_approval(run_id, settings, approved=False)
+        _submit_decision(run_id, settings, "approve")
+    if col2.button("Retry with my fix", key=f"human-fix-{run_id}"):
+        _submit_decision(run_id, settings, "retry_with_human_fix")
+    if col3.button("Reject", key=f"reject-{run_id}"):
+        _submit_decision(run_id, settings, "reject")
 
 
-def _submit_approval(run_id: str, settings: Settings, approved: bool) -> None:
+def _submit_decision(run_id: str, settings: Settings, action: str) -> None:
     try:
         with st.spinner("Submitting decision..."):
             result = signed_post(
                 f"{settings.api_endpoint}/runs/{run_id}/approve",
-                {"approved": approved},
+                {"action": action},
                 settings.aws_region,
             )
     except (NoCredentialsError, SignedRequestError) as e:

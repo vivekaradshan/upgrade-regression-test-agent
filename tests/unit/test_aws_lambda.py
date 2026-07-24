@@ -609,6 +609,62 @@ class TestApproveRunHandler:
         assert result["statusCode"] == 400
         mock_sfn.send_task_success.assert_not_called()
 
+    def test_retry_with_human_fix_resumes_without_applying_anything(self, manifest_dict):
+        from src.aws_lambda import approve_run_handler as arh
+
+        # No structured fix_config - this is exactly the case a human fix
+        # is for (approve alone would 400 on this same pending_state, per
+        # the test above).
+        pending_state = self._pending_state(manifest_dict, fix_config=None)
+        mock_state_store = MagicMock()
+        mock_state_store.get_run_metadata.return_value = {
+            "pending_approval_task_token": "token-abc",
+            "pending_approval_state": json.dumps(pending_state),
+        }
+        mock_github_client = MagicMock()
+
+        event = {
+            "pathParameters": {"run_id": "run-1"},
+            "body": json.dumps({"action": "retry_with_human_fix"}),
+        }
+
+        with (
+            patch.object(arh, "get_state_store", return_value=mock_state_store),
+            patch.object(arh, "get_github_client", return_value=mock_github_client),
+            patch.object(arh, "sfn") as mock_sfn,
+        ):
+            result = arh.handler(event, context=None)
+
+        assert result["statusCode"] == 200
+        # The whole point: nothing gets committed, unlike approve() - the
+        # human already pushed their own fix directly to the branch.
+        mock_github_client.update_file.assert_not_called()
+        mock_sfn.send_task_success.assert_called_once()
+        resumed_output = json.loads(mock_sfn.send_task_success.call_args.kwargs["output"])
+        assert resumed_output["phase"] == "RETRY"
+        assert resumed_output["retry_count"] == 2
+        # Must NOT flag approved_llm_fix - a human-authored code fix isn't
+        # eligible for Phase 15.5's pattern-library-growth flywheel.
+        mock_state_store.update_run_status.assert_called_once()
+        assert "approved_llm_fix" not in mock_state_store.update_run_status.call_args.kwargs
+
+    def test_invalid_action_returns_400(self, manifest_dict):
+        from src.aws_lambda import approve_run_handler as arh
+
+        pending_state = self._pending_state(manifest_dict, fix_config=None)
+        mock_state_store = MagicMock()
+        mock_state_store.get_run_metadata.return_value = {
+            "pending_approval_task_token": "token-abc",
+            "pending_approval_state": json.dumps(pending_state),
+        }
+
+        event = {"pathParameters": {"run_id": "run-1"}, "body": json.dumps({"action": "not_a_real_action"})}
+
+        with patch.object(arh, "get_state_store", return_value=mock_state_store):
+            result = arh.handler(event, context=None)
+
+        assert result["statusCode"] == 400
+
     def test_reject_sends_task_failure(self, manifest_dict):
         from src.aws_lambda import approve_run_handler as arh
 

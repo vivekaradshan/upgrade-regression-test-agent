@@ -227,6 +227,10 @@ data "aws_iam_policy_document" "analyze_logs_permissions" {
     resources = [
       aws_secretsmanager_secret.github_token.arn,
       aws_secretsmanager_secret.openai_api_key.arn,
+      # Only analyze_logs uses the ReAct loop (search_web tool) and LLM
+      # tracing directly - the other Lambdas have no need for either.
+      aws_secretsmanager_secret.tavily_api_key.arn,
+      aws_secretsmanager_secret.langsmith_api_key.arn,
     ]
   }
   statement {
@@ -250,18 +254,26 @@ resource "aws_iam_role_policy" "analyze_logs" {
 }
 
 resource "aws_lambda_function" "analyze_logs" {
-  function_name    = "${var.project_name}-analyze-logs"
-  role             = aws_iam_role.analyze_logs.arn
-  handler          = "src.aws_lambda.analyze_logs_handler.handler"
-  runtime          = "python3.12"
-  timeout          = 120
+  function_name = "${var.project_name}-analyze-logs"
+  role           = aws_iam_role.analyze_logs.arn
+  handler        = "src.aws_lambda.analyze_logs_handler.handler"
+  runtime        = "python3.12"
+  # Raised from 120s: Phase 15.2's ReAct loop can make up to 5 OpenAI
+  # tool-calling round trips plus real Tavily web searches per invocation,
+  # not just the single LLM call this timeout originally budgeted for.
+  timeout          = 300
   memory_size      = 512
   filename         = "${path.module}/../../../build/lambda_placeholder.zip"
   source_code_hash = filebase64sha256("${path.module}/../../../build/lambda_placeholder.zip")
   layers           = [aws_lambda_layer_version.shared.arn]
 
   environment {
-    variables = local.lambda_common_env
+    variables = merge(local.lambda_common_env, {
+      TAVILY_API_KEY_SECRET_ID    = aws_secretsmanager_secret.tavily_api_key.name
+      LANGSMITH_API_KEY_SECRET_ID = aws_secretsmanager_secret.langsmith_api_key.name
+      LANGSMITH_TRACING           = "true"
+      LANGSMITH_PROJECT           = "upgrade-regression-test-agent"
+    })
   }
 }
 

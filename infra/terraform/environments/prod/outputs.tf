@@ -26,6 +26,14 @@ output "openai_api_key_secret_arn" {
   value = aws_secretsmanager_secret.openai_api_key.arn
 }
 
+output "tavily_api_key_secret_arn" {
+  value = aws_secretsmanager_secret.tavily_api_key.arn
+}
+
+output "langsmith_api_key_secret_arn" {
+  value = aws_secretsmanager_secret.langsmith_api_key.arn
+}
+
 output "emr_execution_role_arn" {
   value = aws_iam_role.emr_serverless_execution.arn
 }

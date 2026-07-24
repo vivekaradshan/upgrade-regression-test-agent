@@ -225,20 +225,22 @@ untouched, "outer determinism, inner agency"), with a hard cap on
 iterations (e.g. 5) and a token budget enforced in code, not just
 prompted.
 
-Tools, each a thin wrapper around code that already exists:
+Every tool call (name, args, result summary) gets logged twice: as a
+`record_event(phase="ANALYZE", event="tool_call", ...)` row, same audit
+trail every other phase already writes to, and as a nested LangSmith span
+(wrap each tool function in `@traceable` too, not just `analyze()`) - so
+both the dashboard/report and the LangSmith UI show which tools actually
+contributed to a given fix, not just the final diagnosis. The `Diagnosis`
+shape also gets a `tools_used: list[str]` field for a quick summary in
+the approval UI without opening the full trace.
+
+Tools built in this phase, each a thin wrapper around code that already
+exists:
 
 - `read_log(path, tail_n)` / `grep_log(pattern)` — wraps `LogReader`
   (`src/analysis/log_reader.py`).
 - `read_file(path)` — wraps `github_client.get_file_content` against the
   target branch (already used by `_find_spark_config_file`).
-- `search_migration_guide(query)` — new: a small local corpus (chunk the
-  official Spark 3.5→4.0 migration guide, one markdown/text file
-  committed to the repo — no need for a hosted vector DB at this scale),
-  embedded with OpenAI embeddings, queried via cosine similarity in plain
-  Python (no FAISS/Chroma dependency needed for a corpus this small —
-  matches the project's "no dependency until you need it" pattern, e.g.
-  how `pyyaml_pyfiles` was hand-packaged rather than adding a build
-  tool).
 - `search_web(query)` — **added beyond the original design** (decided
   this session, not in the initial plan): the three tools above only let
   the model dig into things this project already has - its own log, its
@@ -263,6 +265,31 @@ is only found by reading the actual failing line via `read_file`, not
 guessable from the log alone); a real run against a deliberately
 novel/unpatterned failure shows the multi-turn trace in
 `record_event`-logged tool calls.
+
+### ⬜ Deferred: `search_migration_guide` (local RAG over the Spark
+migration guide) — future scope, not built in this pass
+
+Originally planned as a fifth tool alongside the four above: chunk the
+official Spark 3.5→4.0 migration guide into a local markdown/text file
+committed to the repo, embed the chunks with OpenAI embeddings, and query
+via cosine similarity in plain Python (no FAISS/Chroma needed at this
+corpus size - matches the project's "no dependency until you need it"
+pattern, e.g. how `pyyaml_pyfiles` was hand-packaged rather than adding a
+build tool).
+
+Deferred rather than dropped, for a concrete reason: `search_web` (via
+Tavily) already covers most of the same ground - the migration guide's
+content is itself public and indexable - so shipping 4 tools first and
+observing via the eval harness / real trace whether `search_web` alone
+already gets close-enough answers is a cheaper way to find out if the
+RAG tool earns its added complexity (an embeddings pipeline, a chunking
+strategy, and a new corpus file to keep in sync with future Spark
+versions) before committing to building and maintaining it. Revisit once
+15.2's four tools have real usage data - if traces show the model
+repeatedly reaching for `search_web` with the same
+migration-guide-flavored queries and getting noisy general-web results
+back instead of the precise guide section, that's the signal this tool
+is worth building after all.
 
 ## Phase 15.3 — Human-in-the-loop approval gate ✅ built, AWS-only
 

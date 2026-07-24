@@ -1,0 +1,14 @@
+26/07/05 23:24:53 WARN NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+26/07/05 23:24:54 INFO SparkContext: Running Spark version 4.0.0
+26/07/05 23:24:54 INFO ResourceUtils: ==============================================================
+26/07/05 23:24:55 INFO SparkContext: Submitted application: customer-transactions-pipeline
+26/07/05 23:24:56 INFO DAGScheduler: Job 0 finished: parquet at spark_job.py:44, took 1.203421 s
+26/07/05 23:24:56 INFO CodeGenerator: Code generated in 12.4032 ms
+26/07/05 23:24:57 INFO SparkContext: Invoking stop() from shutdown hook
+26/07/05 23:24:57 INFO SparkUI: Stopped Spark web UI at http://localhost:4040
+26/07/05 23:24:57 INFO MapOutputTrackerMasterEndpoint: MapOutputTrackerMasterEndpoint stopped!
+26/07/05 23:24:57 INFO MemoryStore: MemoryStore cleared
+26/07/05 23:24:57 INFO BlockManager: BlockManager stopped
+26/07/05 23:24:57 INFO BlockManagerMaster: BlockManagerMaster stopped
+26/07/05 23:24:57 INFO SparkContext: Successfully stopped SparkContext
+exitCode: 0

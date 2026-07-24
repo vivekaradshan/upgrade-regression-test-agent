@@ -94,8 +94,23 @@ def test_llm_diagnosis_with_no_structured_fix_still_awaits_approval(manifest, st
         fix_key=None,
         fix_value=None,
     )
+    # confidence 0.4 is below REACT_LOOP_CONFIDENCE_THRESHOLD, so the
+    # single-shot diagnosis above gets handed to the ReAct loop - mock it
+    # directly rather than letting analyze_node build a real one from
+    # llm_analyzer's (mocked) ._client, which would try to run the real
+    # tool-calling loop against MagicMock objects.
+    react_analyzer = MagicMock()
+    react_analyzer.analyze.return_value = Diagnosis(
+        root_cause="Unrecognized failure, confirmed via investigation",
+        classification="code_change",
+        fix_suggestion="Needs a code change, not a config fix",
+        confidence=0.4,
+        model="gpt-4o-mini",
+        fix_key=None,
+        fix_value=None,
+    )
 
-    analyze_logs = make_analyze_logs_node(github_client, state_store, llm_analyzer)
+    analyze_logs = make_analyze_logs_node(github_client, state_store, llm_analyzer, react_analyzer)
     result = analyze_logs(
         {
             "run_id": "run-1",
