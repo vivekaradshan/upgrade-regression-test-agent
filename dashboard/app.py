@@ -164,6 +164,8 @@ def render_ai_decision_timeline(events: list[dict]) -> None:
             elif event["event"] == "approval_approved":
                 st.write(f"applied `{event.get('fix_key')} = {event.get('fix_value')}`")
             elif event["event"] == "retry_with_human_fix":
+                description = event.get("description")
+                st.write(description if description else "(no description provided)")
                 st.write(f"retry_count: {event.get('retry_count')}")
             elif event["event"] in ("failure_analyzed", "escalated"):
                 detail = event.get("diagnosis") or event.get("reason")
@@ -304,22 +306,36 @@ def render_approval_gate(run_id: str, metadata: dict) -> None:
         with st.expander("Log evidence the LLM analyzed"):
             st.code(log_excerpt, language="text")
 
+    # Free text, never fed back into the LLM or any automation - purely a
+    # human-readable record of what was actually changed, shown in the AI
+    # Decision Timeline and the eventual PR body in place of a generic
+    # placeholder. No re-interpretation risk since nothing downstream
+    # parses it.
+    human_fix_description = st.text_input(
+        "What did you change? (shown in the timeline and PR)",
+        key=f"human-fix-description-{run_id}",
+        placeholder="e.g. changed spark.sql.parquet.compression.codec from lz4raw to lz4_raw",
+    )
+
     settings = Settings()
     col1, col2, col3 = st.columns(3)
     if fix_config and col1.button("Approve & apply fix", key=f"approve-{run_id}"):
         _submit_decision(run_id, settings, "approve")
     if col2.button("Retry with my fix", key=f"human-fix-{run_id}"):
-        _submit_decision(run_id, settings, "retry_with_human_fix")
+        _submit_decision(run_id, settings, "retry_with_human_fix", description=human_fix_description)
     if col3.button("Reject", key=f"reject-{run_id}"):
         _submit_decision(run_id, settings, "reject")
 
 
-def _submit_decision(run_id: str, settings: Settings, action: str) -> None:
+def _submit_decision(run_id: str, settings: Settings, action: str, description: str | None = None) -> None:
+    payload = {"action": action}
+    if description:
+        payload["description"] = description
     try:
         with st.spinner("Submitting decision..."):
             result = signed_post(
                 f"{settings.api_endpoint}/runs/{run_id}/approve",
-                {"action": action},
+                payload,
                 settings.aws_region,
             )
     except (NoCredentialsError, SignedRequestError) as e:

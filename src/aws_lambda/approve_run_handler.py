@@ -80,7 +80,8 @@ def handler(event: dict, context) -> dict:
     if action == "approve":
         return _approve(state_store, run_id, task_token, pending_state)
     if action == "retry_with_human_fix":
-        return _retry_with_human_fix(state_store, run_id, task_token, pending_state)
+        description = body.get("description") or None
+        return _retry_with_human_fix(state_store, run_id, task_token, pending_state, description)
     return _reject(state_store, run_id, task_token, pending_state)
 
 
@@ -147,13 +148,18 @@ def _approve(state_store, run_id: str, task_token: str, pending_state: dict) -> 
     return _response(200, {"run_id": run_id, "status": "approved", "retry_count": new_retry_count})
 
 
-def _retry_with_human_fix(state_store, run_id: str, task_token: str, pending_state: dict) -> dict:
+def _retry_with_human_fix(
+    state_store, run_id: str, task_token: str, pending_state: dict, description: str | None = None
+) -> dict:
     manifest = TestManifest.model_validate(pending_state["manifest"])
     new_retry_count = pending_state["retry_count"] + 1
     resume_state = {**pending_state, "retry_count": new_retry_count, "phase": "RETRY"}
 
     sfn.send_task_success(taskToken=task_token, output=json.dumps(resume_state))
 
+    corrective_action = (
+        f"human-provided fix: {description}" if description else "human-provided fix pushed directly to the target branch"
+    )
     state_store.update_pipeline_status(
         run_id,
         manifest.pipeline.id,
@@ -161,9 +167,11 @@ def _retry_with_human_fix(state_store, run_id: str, task_token: str, pending_sta
         # stuck showing AWAITING_APPROVAL even after this retry succeeds.
         status="RUNNING",
         retry_count=new_retry_count,
-        corrective_action="human-provided fix pushed directly to the target branch",
+        corrective_action=corrective_action,
     )
-    state_store.record_event(run_id, phase="ANALYZE", event="retry_with_human_fix", retry_count=new_retry_count)
+    state_store.record_event(
+        run_id, phase="ANALYZE", event="retry_with_human_fix", retry_count=new_retry_count, description=description
+    )
     # Deliberately does NOT set approved_llm_fix - raise_pr_handler.py's
     # pattern-library-growth trigger (Phase 15.5) is keyed off an LLM
     # diagnosis + fix_config that led to a pass; a human-authored code fix

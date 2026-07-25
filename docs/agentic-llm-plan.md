@@ -2,17 +2,20 @@
 
 ## Status
 
-Phases 15.0 (tracing half only), 15.1 (simplified), 15.3 (AWS-only), and
-15.5 (pattern-library-growth half only) are built and deployed against
-real AWS, and have now been exercised through real seeded end-to-end
-runs - which surfaced and fixed three real bugs (analyze_logs_handler.py
-only fetching stderr and missing exceptions that land in stdout, no way
-for a human to check an LLM diagnosis against real log evidence before
-approving, and the pipeline-level `status` field never being updated on
-any success path anywhere in the codebase - see git history around
-commit `3e16472`). Phases 15.2 and 15.4 are not started. See "Deviations
-from the original plan" below each built phase for exactly what shipped
-differently than originally designed here, and why.
+Phases 15.0 (both halves - tracing and eval harness), 15.1 (simplified),
+15.2 (ReAct loop, minus the deferred `search_migration_guide` RAG tool),
+15.3 (AWS-only, plus a human-provided-fix path beyond the original
+design), and 15.5 (pattern-library-growth half only) are built and
+deployed against real AWS, and have now been exercised through real
+seeded end-to-end runs - which surfaced and fixed three real bugs
+(analyze_logs_handler.py only fetching stderr and missing exceptions
+that land in stdout, no way for a human to check an LLM diagnosis
+against real log evidence before approving, and the pipeline-level
+`status` field never being updated on any success path anywhere in the
+codebase - see git history around commit `3e16472`). Phase 15.4 is not
+started. See "Deviations from the original plan" below each built phase
+for exactly what shipped differently than originally designed here, and
+why.
 
 Depends on Step 14 (AWS production deployment) being complete first —
 see [`docs/aws-deployment-plan.md`](aws-deployment-plan.md) for that
@@ -20,6 +23,68 @@ status. This document expands on several items already listed in the
 main [README](../README.md)'s Future Enhancements section (HITL
 approval, self-improving pattern library, mitigation vs. remediation
 labeling) into a concrete, phased build plan.
+
+## End-to-end flow: from pattern match to human decision
+
+Hand-maintained (unlike the README's orchestrator diagram, which is
+regenerated from `build_graph(...).get_graph().draw_mermaid()`) - the
+ReAct loop isn't a LangGraph node, it's a plain OpenAI tool-calling loop
+invoked inline from `analyze_node.py`, so it doesn't exist in that
+auto-generated diagram at all. Keep this in sync by hand when the
+analyze/approve flow changes.
+
+```mermaid
+flowchart TD
+    fail[Target job fails] --> pm{Pattern matcher:\nknown_failure_patterns match?}
+    pm -- yes --> autofix[Auto-fix applied\n+ retry, no LLM call]
+    pm -- no --> single[Single-shot LLM call\nLLMAnalyzer.analyze]
+    single --> conf{confidence >= 0.5\nand not escalate?}
+    conf -- yes --> await
+    conf -- no --> react[ReAct loop\nup to 5 tool-calling iterations]
+
+    subgraph react_tools[Tools available each iteration]
+        grep[grep_log]
+        readf[read_file - GitHub]
+        hist[get_run_history]
+        web[search_web - Tavily]
+    end
+    react -.-> react_tools
+
+    react --> propose{propose_fix called\nbefore iteration cap?}
+    propose -- yes --> await
+    propose -- no, cap hit --> await
+
+    await[AWAIT_APPROVAL\nStep Functions waitForTaskToken\nexecution genuinely paused] --> human{Human decision\nvia dashboard}
+
+    human -- Approve --> apply[Apply LLM's fix_key/fix_value\nto target branch]
+    human -- "Retry with my fix" --> pushed[Human already pushed\ntheir own fix to target branch]
+    human -- Reject --> failed[REPORT / FAILED]
+
+    apply --> retry[retry_count += 1\nresume via send_task_success]
+    pushed --> retry
+    retry --> execute[EMR re-executes target job]
+    execute --> analyzeAgain{Job succeeded?}
+    analyzeAgain -- yes --> validate[validate_data:\nrow count / schema / column diff]
+    analyzeAgain -- no --> fail
+
+    validate --> report[generate_report]
+    failed --> report
+    report --> pr[raise_pr: PR opened,\ntitled PASSED or FAILED,\nauto_merge always false]
+
+    autofix -.-> execute
+```
+
+Two things worth noting from real runs, not just the design: the
+`react_tools` box is only ever reached when the single-shot call is
+already unsure - a confident, correct single-shot diagnosis (e.g. the
+well-documented ANSI divide-by-zero case) never touches the ReAct loop
+at all, by design, not as a fallback that silently gets skipped. And
+`propose_fix` "not called before cap hit" still routes to `await`, not a
+silent failure - the honesty-over-confidence design (Phase 15.0's system
+prompt fix) means hitting the cap without a diagnosis produces an
+explicit low-confidence escalate result, verified for real against the
+parquet lz4raw codec regression (genuinely thin EMR log evidence, not an
+artificially withheld one).
 
 ## Consolidated open items, in build order
 

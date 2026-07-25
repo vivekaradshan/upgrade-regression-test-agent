@@ -648,6 +648,39 @@ class TestApproveRunHandler:
         mock_state_store.update_run_status.assert_called_once()
         assert "approved_llm_fix" not in mock_state_store.update_run_status.call_args.kwargs
 
+    def test_retry_with_human_fix_records_the_human_description(self, manifest_dict):
+        from src.aws_lambda import approve_run_handler as arh
+
+        pending_state = self._pending_state(manifest_dict, fix_config=None)
+        mock_state_store = MagicMock()
+        mock_state_store.get_run_metadata.return_value = {
+            "pending_approval_task_token": "token-abc",
+            "pending_approval_state": json.dumps(pending_state),
+        }
+
+        event = {
+            "pathParameters": {"run_id": "run-1"},
+            "body": json.dumps(
+                {
+                    "action": "retry_with_human_fix",
+                    "description": "changed lz4raw to lz4_raw in config.yaml",
+                }
+            ),
+        }
+
+        with (
+            patch.object(arh, "get_state_store", return_value=mock_state_store),
+            patch.object(arh, "get_github_client", return_value=MagicMock()),
+            patch.object(arh, "sfn"),
+        ):
+            result = arh.handler(event, context=None)
+
+        assert result["statusCode"] == 200
+        corrective_action = mock_state_store.update_pipeline_status.call_args.kwargs["corrective_action"]
+        assert corrective_action == "human-provided fix: changed lz4raw to lz4_raw in config.yaml"
+        record_event_kwargs = mock_state_store.record_event.call_args.kwargs
+        assert record_event_kwargs["description"] == "changed lz4raw to lz4_raw in config.yaml"
+
     def test_invalid_action_returns_400(self, manifest_dict):
         from src.aws_lambda import approve_run_handler as arh
 
