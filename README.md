@@ -74,6 +74,19 @@ tests/
   e2e/                     Full end-to-end integration test
 ```
 
+## AWS architecture
+
+The production deployment (Step 14/15) runs on Step Functions
+orchestrating seven Lambda handlers and two EMR Serverless Spark
+applications, with a human-in-the-loop approval gate and a three-tier
+analysis cascade (pattern matcher → single-shot LLM → ReAct tool-calling
+loop), backed by DynamoDB, S3, and Secrets Manager, with GitHub, OpenAI,
+Tavily, and LangSmith as external dependencies. Source:
+[`docs/Upgrade Agent Architecture.html`](<docs/Upgrade Agent Architecture.html>)
+(open directly in a browser for the live version).
+
+![AWS architecture diagram](<docs/Upgrade Agent Architecture.png>)
+
 ## Orchestrator graph
 
 The orchestrator is a [LangGraph](https://github.com/langchain-ai/langgraph)
