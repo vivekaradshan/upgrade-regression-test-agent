@@ -1,0 +1,644 @@
+<title>Upgrade Regression Test Agent — System Architecture</title>
+<style>
+  :root {
+    --bg: #f4f5f8;
+    --bg-raised: #ffffff;
+    --ink: #12151f;
+    --ink-dim: #545b6e;
+    --line: #d7dbe6;
+    --line-strong: #b7bdcf;
+
+    --compute: #c1590a;
+    --compute-bg: #fdf1e4;
+    --compute-line: #eec092;
+
+    --orch: #b31463;
+    --orch-bg: #fceaf3;
+    --orch-line: #eeb6d5;
+
+    --data: #3b4bc4;
+    --data-bg: #eceffd;
+    --data-line: #bcc4f2;
+
+    --storage: #4f7a12;
+    --storage-bg: #eef5e2;
+    --storage-line: #c3d9a3;
+
+    --security: #a92b42;
+    --security-bg: #fbeaee;
+    --security-line: #eab8c3;
+
+    --external: #5b3ec8;
+    --external-bg: #efecfb;
+    --external-line: #cabff0;
+
+    --obs: #545b6e;
+    --obs-bg: #ffffff;
+
+    --font-display: -apple-system, "SF Pro Display", "Segoe UI Variable", "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0f16;
+      --bg-raised: #14161f;
+      --ink: #e8e9f1;
+      --ink-dim: #9aa0b4;
+      --line: #262a3a;
+      --line-strong: #383e54;
+
+      --compute: #f2954a;
+      --compute-bg: #241a10;
+      --compute-line: #4a3420;
+
+      --orch: #f2599e;
+      --orch-bg: #241220;
+      --orch-line: #4a2740;
+
+      --data: #8b96f0;
+      --data-bg: #171a2e;
+      --data-line: #333c66;
+
+      --storage: #9dc45a;
+      --storage-bg: #191f13;
+      --storage-line: #3a4a26;
+
+      --security: #ea8394;
+      --security-bg: #26141a;
+      --security-line: #4d2530;
+
+      --external: #ab9af5;
+      --external-bg: #1c1830;
+      --external-line: #3c3266;
+
+      --obs: #9aa0b4;
+      --obs-bg: #14161f;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0d0f16;
+    --bg-raised: #14161f;
+    --ink: #e8e9f1;
+    --ink-dim: #9aa0b4;
+    --line: #262a3a;
+    --line-strong: #383e54;
+    --compute: #f2954a; --compute-bg: #241a10; --compute-line: #4a3420;
+    --orch: #f2599e; --orch-bg: #241220; --orch-line: #4a2740;
+    --data: #8b96f0; --data-bg: #171a2e; --data-line: #333c66;
+    --storage: #9dc45a; --storage-bg: #191f13; --storage-line: #3a4a26;
+    --security: #ea8394; --security-bg: #26141a; --security-line: #4d2530;
+    --external: #ab9af5; --external-bg: #1c1830; --external-line: #3c3266;
+    --obs: #9aa0b4; --obs-bg: #14161f;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f5f8;
+    --bg-raised: #ffffff;
+    --ink: #12151f;
+    --ink-dim: #545b6e;
+    --line: #d7dbe6;
+    --line-strong: #b7bdcf;
+    --compute: #c1590a; --compute-bg: #fdf1e4; --compute-line: #eec092;
+    --orch: #b31463; --orch-bg: #fceaf3; --orch-line: #eeb6d5;
+    --data: #3b4bc4; --data-bg: #eceffd; --data-line: #bcc4f2;
+    --storage: #4f7a12; --storage-bg: #eef5e2; --storage-line: #c3d9a3;
+    --security: #a92b42; --security-bg: #fbeaee; --security-line: #eab8c3;
+    --external: #5b3ec8; --external-bg: #efecfb; --external-line: #cabff0;
+    --obs: #545b6e; --obs-bg: #ffffff;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-display);
+  }
+  body {
+    padding: 56px 20px 40px;
+  }
+  .page {
+    max-width: 1080px;
+    margin: 0 auto;
+  }
+
+  /* ---------- header ---------- */
+  header {
+    margin-bottom: 44px;
+  }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    margin: 0 0 10px;
+  }
+  h1 {
+    font-size: 30px;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    margin: 0 0 10px;
+    text-wrap: balance;
+    font-weight: 650;
+  }
+  .dek {
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--ink-dim);
+    max-width: 640px;
+    margin: 0;
+  }
+  .dek code {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  /* ---------- spine layout ---------- */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+  .band {
+    display: flex;
+    justify-content: center;
+  }
+  .connector {
+    display: flex;
+    justify-content: center;
+    height: 30px;
+  }
+  .connector::before {
+    content: "";
+    width: 2px;
+    background: var(--line-strong);
+  }
+  .connector.arrow {
+    position: relative;
+  }
+  .connector.arrow::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: 0;
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid var(--line-strong);
+    border-bottom: 2px solid var(--line-strong);
+    transform: translateX(-50%) rotate(45deg);
+  }
+
+  /* ---------- generic node card ---------- */
+  .node {
+    border-radius: 14px;
+    border: 1px solid var(--line);
+    background: var(--bg-raised);
+    padding: 16px 20px;
+  }
+  .node-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 4px;
+  }
+  .node-title .glyph {
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+  }
+  .node-title h2 {
+    font-size: 15px;
+    font-weight: 650;
+    margin: 0;
+    letter-spacing: -0.005em;
+  }
+  .node-sub {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+    margin: 0 0 0 36px;
+  }
+
+  .chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 12px;
+  }
+  .chip {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    padding: 4px 9px;
+    border-radius: 7px;
+    white-space: nowrap;
+    line-height: 1.5;
+  }
+
+  /* ---------- client row ---------- */
+  .client-row {
+    display: flex;
+    gap: 14px;
+  }
+  .client-row .node { min-width: 220px; }
+
+  /* ---------- category coloring ---------- */
+  .compute { border-color: var(--compute-line); background: var(--compute-bg); }
+  .compute .node-title h2, .compute .glyph { color: var(--compute); }
+  .compute .chip { background: var(--bg-raised); border: 1px solid var(--compute-line); color: var(--ink); }
+
+  .orch { border-color: var(--orch-line); background: var(--orch-bg); }
+  .orch .node-title h2, .orch .glyph { color: var(--orch); }
+  .orch .chip { background: var(--bg-raised); border: 1px solid var(--orch-line); color: var(--ink); }
+
+  .data { border-color: var(--data-line); background: var(--data-bg); }
+  .data .node-title h2, .data .glyph { color: var(--data); }
+
+  .storage { border-color: var(--storage-line); background: var(--storage-bg); }
+  .storage .node-title h2, .storage .glyph { color: var(--storage); }
+
+  .security { border-color: var(--security-line); background: var(--security-bg); }
+  .security .node-title h2, .security .glyph { color: var(--security); }
+
+  .external { border-color: var(--external-line); background: var(--external-bg); }
+  .external .node-title h2, .external .glyph { color: var(--external); }
+  .external .chip { background: var(--bg-raised); border: 1px solid var(--external-line); color: var(--ink); }
+
+  .obs { border-style: dashed; color: var(--obs); }
+  .obs .node-title h2, .obs .glyph { color: var(--obs); }
+
+  .neutral { border-color: var(--line); }
+
+  /* ---------- step functions centerpiece ---------- */
+  .sfn { max-width: 560px; width: 100%; }
+  .sfn .chip-row { gap: 4px; }
+  .sfn .chip { background: var(--bg-raised); border: 1px solid var(--orch-line); }
+  .sfn .chip.dim { color: var(--ink-dim); }
+  .sfn .sep { color: var(--ink-dim); font-family: var(--font-mono); font-size: 11.5px; align-self: center; }
+  .callout {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--orch-line);
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--ink-dim);
+  }
+  .callout b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- fanout: observability | compute | external ---------- */
+  .fanout-wrap { padding-top: 34px; position: relative; }
+  .fanout {
+    display: grid;
+    grid-template-columns: 0.95fr 1.3fr 0.95fr;
+    gap: 22px;
+    align-items: start;
+    position: relative;
+  }
+  .fanout-wrap::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 6%;
+    right: 6%;
+    height: 2px;
+    background: var(--line-strong);
+  }
+  .fanout > * { position: relative; }
+  .fanout > *::before {
+    content: "";
+    position: absolute;
+    top: -34px;
+    left: 50%;
+    width: 2px;
+    height: 34px;
+    background: var(--line-strong);
+    transform: translateX(-50%);
+  }
+  .branch-label {
+    position: absolute;
+    top: -9px;
+    background: var(--bg);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    color: var(--ink-dim);
+    padding: 0 8px;
+    white-space: nowrap;
+  }
+  .branch-label.left { left: 15%; transform: translateX(-50%); }
+  .branch-label.right { right: 15%; transform: translateX(50%); }
+
+  .compute-stack { display: flex; flex-direction: column; gap: 12px; }
+
+  .lambda-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-top: 12px;
+  }
+  .lambda-grid .chip { text-align: center; }
+  .lambda-grid .chip.react {
+    box-shadow: 0 0 0 1.5px var(--compute) inset;
+    font-weight: 600;
+  }
+  .fn-foot {
+    margin-top: 10px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--ink-dim);
+  }
+
+  .external ul, .obs ul {
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+  .external li, .obs li {
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .external li b, .obs li b {
+    font-family: var(--font-mono);
+    font-weight: 650;
+    color: var(--ink);
+    display: block;
+    font-size: 12.5px;
+  }
+  .external li span, .obs li span { color: var(--ink-dim); }
+
+  /* ---------- data row ---------- */
+  .data-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+  .data-row .node-sub { margin-left: 0; margin-top: 6px; }
+  .data-row li { font-size: 11.5px; color: var(--ink-dim); margin-top: 6px; }
+
+  /* ---------- legend ---------- */
+  .legend {
+    margin-top: 52px;
+    padding-top: 22px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px 26px;
+    align-items: center;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--ink-dim);
+    font-family: var(--font-mono);
+  }
+  .swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    flex: 0 0 auto;
+  }
+  .swatch.dashed {
+    border: 1.5px dashed var(--obs);
+    background: transparent;
+  }
+
+  footer {
+    margin-top: 28px;
+    font-size: 11.5px;
+    color: var(--ink-dim);
+    font-family: var(--font-mono);
+  }
+  footer a { color: inherit; }
+
+  @media (max-width: 760px) {
+    .fanout { grid-template-columns: 1fr; }
+    .fanout > *::before { display: none; }
+    .fanout-wrap::before { display: none; }
+    .branch-label { display: none; }
+    .data-row { grid-template-columns: repeat(2, 1fr); }
+    .client-row { flex-direction: column; }
+    .lambda-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  .wrap-x { overflow-x: auto; }
+</style>
+
+<div class="page">
+  <header>
+    <p class="eyebrow">System architecture — v2</p>
+    <h1>Upgrade Regression Test Agent</h1>
+    <p class="dek">
+      Real infrastructure this system runs on: an AWS Step Functions state
+      machine orchestrating nine Lambda handlers and two EMR Serverless
+      Spark applications, backed by DynamoDB, S3, and Secrets Manager —
+      plus GitHub, OpenAI, Tavily, and LangSmith as external dependencies.
+      Triggered via <code>streamlit run dashboard/app.py</code> or
+      <code>cli.py --target aws</code>.
+    </p>
+  </header>
+
+  <div class="wrap-x">
+  <div class="flow" style="min-width: 640px;">
+
+    <!-- CLIENT -->
+    <div class="band">
+      <div class="client-row">
+        <div class="node neutral">
+          <div class="node-title">
+            <svg class="glyph" viewBox="0 0 26 26" fill="none"><rect x="2" y="4" width="22" height="15" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M2 8h22" stroke="currentColor" stroke-width="1.6"/><path d="M9 22h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <h2>Streamlit Dashboard</h2>
+          </div>
+          <p class="node-sub">AWS mode · localhost:8501</p>
+        </div>
+        <div class="node neutral">
+          <div class="node-title">
+            <svg class="glyph" viewBox="0 0 26 26" fill="none"><rect x="2" y="3" width="22" height="20" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M6 9l4 3-4 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 16h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <h2>CLI</h2>
+          </div>
+          <p class="node-sub">cli.py run --target aws</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector arrow"></div>
+
+    <!-- API GATEWAY -->
+    <div class="band">
+      <div class="node orch" style="min-width: 320px;">
+        <div class="node-title">
+          <svg class="glyph" viewBox="0 0 26 26" fill="none"><circle cx="13" cy="13" r="10" stroke="currentColor" stroke-width="1.6"/><circle cx="13" cy="13" r="3" fill="currentColor"/><path d="M13 3v3M13 20v3M23 13h-3M6 13H3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <h2>API Gateway</h2>
+        </div>
+        <p class="node-sub">HTTP API · upgrade-agent-api</p>
+        <div class="chip-row">
+          <span class="chip">POST /runs</span>
+          <span class="chip">POST /runs/{run_id}/approve</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector arrow"></div>
+
+    <!-- STEP FUNCTIONS -->
+    <div class="band">
+      <div class="node orch sfn">
+        <div class="node-title">
+          <svg class="glyph" viewBox="0 0 26 26" fill="none"><circle cx="5" cy="6" r="2.4" stroke="currentColor" stroke-width="1.6"/><circle cx="21" cy="6" r="2.4" stroke="currentColor" stroke-width="1.6"/><circle cx="13" cy="20" r="2.4" stroke="currentColor" stroke-width="1.6"/><path d="M7 7.5L11 18M19 7.5L15 18" stroke="currentColor" stroke-width="1.6"/></svg>
+          <h2>Step Functions</h2>
+        </div>
+        <p class="node-sub">upgrade-agent-orchestrator (state machine)</p>
+        <div class="chip-row">
+          <span class="chip">BRANCH</span><span class="sep">›</span>
+          <span class="chip">BUILD</span><span class="sep">›</span>
+          <span class="chip">EXECUTE</span><span class="sep">›</span>
+          <span class="chip">ANALYZE</span><span class="sep">›</span>
+          <span class="chip">AWAIT_APPROVAL</span><span class="sep">›</span>
+          <span class="chip">VALIDATE</span><span class="sep">›</span>
+          <span class="chip">REPORT</span><span class="sep">›</span>
+          <span class="chip">PR</span>
+        </div>
+        <p class="callout">
+          <b>AWAIT_APPROVAL</b> uses <code style="font-family:var(--font-mono)">waitForTaskToken</code> —
+          the execution genuinely pauses, no polling, until a human clicks
+          Approve, Retry with my fix, or Reject on the dashboard.
+        </p>
+      </div>
+    </div>
+
+    <!-- FANOUT: observability | compute | external -->
+    <div class="fanout-wrap">
+      <div class="fanout">
+        <span class="branch-label left">logs &amp; metrics</span>
+        <span class="branch-label right">external calls</span>
+
+        <!-- OBSERVABILITY -->
+        <div class="node obs">
+          <div class="node-title">
+            <svg class="glyph" viewBox="0 0 26 26" fill="none"><path d="M2 13c3-6 8-9 11-9s8 3 11 9c-3 6-8 9-11 9s-8-3-11-9z" stroke="currentColor" stroke-width="1.6"/><circle cx="13" cy="13" r="3.2" stroke="currentColor" stroke-width="1.6"/></svg>
+            <h2>Observability</h2>
+          </div>
+          <ul>
+            <li><b>CloudWatch Logs</b><span>every Lambda + state machine execution</span></li>
+            <li><b>CloudWatch Alarm → SNS</b><span>execution-failure email alert</span></li>
+            <li><b>AWS Budget</b><span>~$0.15–0.25 per run threshold</span></li>
+          </ul>
+        </div>
+
+        <!-- COMPUTE -->
+        <div class="compute-stack">
+          <div class="node compute">
+            <div class="node-title">
+              <svg class="glyph" viewBox="0 0 26 26" fill="none"><path d="M9 3L6 13h4l-2 10 9-13h-5l3-7z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+              <h2>AWS Lambda</h2>
+            </div>
+            <p class="node-sub">nine thin handlers, src/aws_lambda/*.py</p>
+            <div class="lambda-grid">
+              <span class="chip">create_branches</span>
+              <span class="chip">mock_build</span>
+              <span class="chip">prepare_execution</span>
+              <span class="chip react">analyze_logs</span>
+              <span class="chip">await_approval</span>
+              <span class="chip">approve_run</span>
+              <span class="chip">read_validation_results</span>
+              <span class="chip">generate_report</span>
+              <span class="chip">raise_pr</span>
+            </div>
+            <p class="fn-foot"><b style="color:var(--ink)">analyze_logs</b> runs the ReAct loop when the pattern matcher and single-shot LLM call both fall short — see the decision-flow diagram in <span style="font-family:var(--font-mono)">docs/agentic-llm-plan.md</span>.</p>
+          </div>
+          <div class="node compute">
+            <div class="node-title">
+              <svg class="glyph" viewBox="0 0 26 26" fill="none"><path d="M4 8c0-2.8 4-5 9-5s9 2.2 9 5-4 5-9 5-9-2.2-9-5z" stroke="currentColor" stroke-width="1.6"/><path d="M4 8v10c0 2.8 4 5 9 5s9-2.2 9-5V8" stroke="currentColor" stroke-width="1.6"/><path d="M4 13c0 2.8 4 5 9 5s9-2.2 9-5" stroke="currentColor" stroke-width="1.6"/></svg>
+              <h2>EMR Serverless</h2>
+            </div>
+            <p class="node-sub">native .sync integration, no polling Lambda</p>
+            <div class="chip-row">
+              <span class="chip">baseline app · Spark 3.5.4</span>
+              <span class="chip">target app · Spark 4.0.0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- EXTERNAL -->
+        <div class="node external">
+          <div class="node-title">
+            <svg class="glyph" viewBox="0 0 26 26" fill="none"><circle cx="13" cy="13" r="10.5" stroke="currentColor" stroke-width="1.6"/><path d="M13 2.5c3 3 4.5 6.7 4.5 10.5S16 20.5 13 23.5M13 2.5c-3 3-4.5 6.7-4.5 10.5S10 20.5 13 23.5M3 13h20" stroke="currentColor" stroke-width="1.3"/></svg>
+            <h2>External services</h2>
+          </div>
+          <ul>
+            <li><b>GitHub</b><span>branches, commits, PRs — customer-transactions-pipeline</span></li>
+            <li><b>OpenAI</b><span>gpt-4o-mini · diagnosis + ReAct tool-calling</span></li>
+            <li><b>Tavily</b><span>search_web tool, real web search</span></li>
+            <li><b>LangSmith</b><span>trace of every LLM + tool call</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector arrow"></div>
+
+    <!-- DATA & SECRETS -->
+    <div class="band" style="width: 100%;">
+      <div class="data-row" style="width: 100%;">
+        <div class="node data">
+          <div class="node-title">
+            <svg class="glyph" viewBox="0 0 26 26" fill="none"><ellipse cx="13" cy="6" rx="9" ry="3" stroke="currentColor" stroke-width="1.6"/><path d="M4 6v14c0 1.7 4 3 9 3s9-1.3 9-3V6" stroke="currentColor" stroke-width="1.6"/><path d="M4 13c0 1.7 4 3 9 3s9-1.3 9-3" stroke="currentColor" stroke-width="1.6"/></svg>
+            <h2>DynamoDB</h2>
+          </div>
+          <p class="node-sub">upgrade-test-runs</p>
+          <ul><li>run + pipeline state</li><li>append-only event log</li></ul>
+        </div>
+        <div class="node storage">
+          <div class="node-title">
+            <svg class="glyph" viewBox="0 0 26 26" fill="none"><path d="M5 5h16l-2 17H7L5 5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 5h18" stroke="currentColor" stroke-width="1.6"/></svg>
+            <h2>S3 · artifacts</h2>
+          </div>
+          <p class="node-sub">upgrade-agent-artifacts</p>
+          <ul><li>EMR driver logs</li><li>pipeline deps (pyyaml.zip)</li></ul>
+        </div>
+        <div class="node storage">
+          <div class="node-title">
+            <svg class="glyph" viewBox="0 0 26 26" fill="none"><path d="M5 5h16l-2 17H7L5 5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 5h18" stroke="currentColor" stroke-width="1.6"/></svg>
+            <h2>S3 · reports</h2>
+          </div>
+          <p class="node-sub">upgrade-agent-reports</p>
+          <ul><li>report.html / report.json</li></ul>
+        </div>
+        <div class="node security">
+          <div class="node-title">
+            <svg class="glyph" viewBox="0 0 26 26" fill="none"><circle cx="9" cy="13" r="5" stroke="currentColor" stroke-width="1.6"/><path d="M13 13h11M20 13v5M24 13v3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <h2>Secrets Manager</h2>
+          </div>
+          <p class="node-sub">4 secrets</p>
+          <ul><li>github-token</li><li>openai-api-key</li><li>tavily-api-key</li><li>langsmith-api-key</li></ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  </div>
+
+  <div class="legend">
+    <span class="legend-item"><span class="swatch" style="background:var(--orch)"></span>Orchestration &amp; integration</span>
+    <span class="legend-item"><span class="swatch" style="background:var(--compute)"></span>Compute</span>
+    <span class="legend-item"><span class="swatch" style="background:var(--data)"></span>Database</span>
+    <span class="legend-item"><span class="swatch" style="background:var(--storage)"></span>Storage</span>
+    <span class="legend-item"><span class="swatch" style="background:var(--security)"></span>Security</span>
+    <span class="legend-item"><span class="swatch" style="background:var(--external)"></span>External service</span>
+    <span class="legend-item"><span class="swatch dashed"></span>Observability (cross-cutting)</span>
+  </div>
+
+  <footer>
+    upgrade-regression-test-agent · Spark 3.5.4 → 4.0.0 · region us-east-1 · Terraform-managed (infra/terraform/environments/prod)
+  </footer>
+</div>
